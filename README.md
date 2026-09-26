@@ -94,7 +94,7 @@ Traditional honeypots are static, expensive to maintain, and easily avoided by m
 ### Option 1: Run with Docker Compose (Recommended)
 
 ```bash
-git clone https://github.com/your-org/canarymesh.git
+git clone https://github.com/rushyaayt/canarymesh.git
 cd canarymesh
 docker compose up -d
 ```
@@ -106,7 +106,7 @@ The CanaryMesh server and SOC Dashboard will be live at **`http://localhost:8000
 
 ```bash
 # 1. Clone & enter repository
-git clone https://github.com/your-org/canarymesh.git
+git clone https://github.com/rushyaayt/canarymesh.git
 cd canarymesh
 
 # 2. Initialize virtual environment
