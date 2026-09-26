@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Deploy realistic, low-cost honeytokens across cloud, code, and CI/CD pipelines to catch credential misuse and supply-chain attacks with zero false positives.">
+  <title>CanaryMesh — Honeytoken-as-a-Service Deception Platform</title>
+  
+  <!-- Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="navbar" id="main-nav">
+    <div class="brand">
+      <div class="radar-logo" aria-hidden="true">
+        <div class="radar-sweep"></div>
+      </div>
+      <div>
+        <div class="brand-title">CanaryMesh</div>
+        <div class="brand-subtitle">Honeytoken-as-a-Service</div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-links" aria-label="Main Navigation">
+      <button class="nav-tab active" id="tab-btn-fleet" onclick="switchTab('fleet')">
+        <span aria-hidden="true">🛰️</span> Fleet Inventory
+      </button>
+      <button class="nav-tab" id="tab-btn-alerts" onclick="switchTab('alerts')">
+        <span aria-hidden="true">🚨</span> Breach Alerts
+        <span id="nav-alert-badge" class="badge badge-tripped" style="display:none; font-size: 0.65rem; padding: 1px 5px;">0</span>
+      </button>
+      <button class="nav-tab" id="tab-btn-ci" onclick="switchTab('ci')">
+        <span aria-hidden="true">⚡</span> CI/CD Seeder
+      </button>
+      <button class="nav-tab" id="tab-btn-simulator" onclick="switchTab('simulator')">
+        <span aria-hidden="true">🎯</span> Attack Simulator
+      </button>
+      <a href="/docs" target="_blank" class="nav-tab" style="text-decoration:none;">
+        <span aria-hidden="true">📖</span> API Docs ↗
+      </a>
+    </nav>
+
+    <!-- Action Buttons & System State -->
+    <div class="nav-actions">
+      <div class="status-pill" id="system-status-indicator">
+        <div class="status-dot"></div>
+        <span>MESH ACTIVE</span>
+      </div>
+      <button class="btn-primary" id="btn-open-deploy-modal" onclick="openDeployModal()">
+        <span aria-hidden="true">+</span> Deploy Honeytoken
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Application Body -->
+  <main class="main-content">
+    
+    <!-- Hero / Metrics Ribbon -->
+    <section class="metrics-grid" aria-label="Telemetry Metrics">
+      <div class="metric-card" id="metric-card-active">
+        <div class="metric-title">Active Honeytokens</div>
+        <div class="metric-value" id="stat-active-tokens">0</div>
+        <div style="margin-top: 6px;">
+          <span class="metric-indicator indicator-green">● Deception Grid Armed</span>
+        </div>
+      </div>
+
+      <div class="metric-card alert-card" id="metric-card-breaches">
+        <div class="metric-title">Breach Intrusions Tripped</div>
+        <div class="metric-value" id="stat-total-alerts" style="color: var(--accent-crimson);">0</div>
+        <div style="margin-top: 6px;">
+          <span class="metric-indicator indicator-red" id="stat-tripped-subtext">0 tokens touched</span>
+        </div>
+      </div>
+
+      <div class="metric-card" id="metric-card-ephemeral">
+        <div class="metric-title">Ephemeral CI Keys</div>
+        <div class="metric-value" id="stat-ci-tokens">0</div>
+        <div style="margin-top: 6px;">
+          <span class="metric-indicator indicator-green">⚡ Pipeline Defense Ready</span>
+        </div>
+      </div>
+
+      <div class="metric-card" id="metric-card-fp">
+        <div class="metric-title">False Positive Rate</div>
+        <div class="metric-value" style="color: var(--accent-emerald);">0.00%</div>
+        <div style="margin-top: 6px;">
+          <span style="font-size: 0.75rem; color: var(--text-muted);">Deterministic Canary Detection</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 1: FLEET INVENTORY -->
+    <section class="view-panel active" id="view-fleet">
+      <div class="panel-card">
+        <div class="panel-header">
+          <div>
+            <h1 class="panel-title">Active Honeytoken Deception Mesh</h1>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">
+              Distributed fake credentials planted across developer laptops, repositories, CI/CD runners, and cloud infrastructure.
+            </p>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn-secondary" onclick="loadTokens()"><span aria-hidden="true">🔄</span> Refresh</button>
+            <button class="btn-primary" onclick="openDeployModal()">+ Deploy New</button>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="cyber-table" id="tokens-table">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Token Identifier / Label</th>
+                <th>Target Environment</th>
+                <th>Masked Key</th>
+                <th>TTL / Expires</th>
+                <th>Status</th>
+                <th>Trips</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tokens-table-body">
+              <tr>
+                <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                  Loading honeytokens from mesh...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: BREACH INCIDENTS & FORENSICS -->
+    <section class="view-panel" id="view-alerts">
+      <div class="panel-card">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">Forensic Intrusion Alerts</h2>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">
+              High-fidelity forensic breadcrumbs emitted the exact millisecond an adversary touches a planted honeytoken.
+            </p>
+          </div>
+          <button class="btn-secondary" onclick="loadAlerts()"><span aria-hidden="true">🔄</span> Refresh Feed</button>
+        </div>
+
+        <div class="table-responsive">
+          <table class="cyber-table" id="alerts-table">
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Token Label</th>
+                <th>Adversary IP & Geolocation</th>
+                <th>Tool / Client Fingerprint</th>
+                <th>Route Attempted</th>
+                <th>Decoy Code</th>
+                <th>Timestamp (UTC)</th>
+                <th>Forensics</th>
+              </tr>
+            </thead>
+            <tbody id="alerts-table-body">
+              <tr>
+                <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                  No intrusion alerts recorded yet. Your deception mesh is quiet.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: CI/CD PIPELINE SEEDER -->
+    <section class="view-panel" id="view-ci">
+      <div class="panel-card">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">Ephemeral CI/CD Honeytoken Seeding</h2>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">
+              Automatically generate time-bound honeytokens during CI runs. If an adversary steals secrets from runner logs, PR workflows, or artifact caches, alerts fire immediately.
+            </p>
+          </div>
+        </div>
+
+        <!-- Interactive Quick Seeder -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2rem;">
+          <div>
+            <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--accent-cyan);">1. Test Ephemeral Key Generation</h3>
+            
+            <div class="form-group">
+              <label class="form-label" for="ci-repo-input">Repository</label>
+              <input class="form-input" id="ci-repo-input" value="acme-corp/payment-gateway" placeholder="org/repo">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="ci-workflow-input">Workflow Name</label>
+              <input class="form-input" id="ci-workflow-input" value="build-test-deploy" placeholder="ci-pipeline">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="ci-ttl-input">Lifetime (TTL Minutes)</label>
+              <input class="form-input" id="ci-ttl-input" type="number" value="60" min="5" max="1440">
+            </div>
+
+            <button class="btn-primary" id="btn-generate-ci-seed" onclick="generateCISeed()">
+              ⚡ Seed Ephemeral CI Key
+            </button>
+          </div>
+
+          <div>
+            <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--accent-cyan);">Generated CI Pipeline Export</h3>
+            <div class="code-block" id="ci-seed-output">
+              // Click 'Seed Ephemeral CI Key' to preview injected environment variables and trap endpoints
+            </div>
+          </div>
+        </div>
+
+        <!-- Production CI/CD YAML Integration Snippet -->
+        <h3 style="font-size: 1rem; margin-bottom: 0.5rem; color: var(--text-primary);">GitHub Actions Workflow Example</h3>
+        <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
+          Add this step to your <code>.github/workflows/ci.yml</code> to seed a canary token in every pipeline execution:
+        </p>
+
+        <div class="code-block">
+<button class="code-copy-btn" onclick="copySnippet('gh-action-yaml')">Copy YAML</button>
+<pre id="gh-action-yaml">name: Secure CI Pipeline
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Seed Ephemeral Honeytoken (CanaryMesh)
+        run: |
+          RESPONSE=$(curl -s -X POST "${{ secrets.CANARYMESH_URL }}/api/v1/seed/ci" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "repository": "${{ github.repository }}",
+              "workflow": "${{ github.workflow }}",
+              "run_id": "${{ github.run_id }}",
+              "commit_sha": "${{ github.sha }}",
+              "ttl_minutes": 90
+            }')
+          
+          # Ingest token as decoy build secret
+          KEY=$(echo "$RESPONSE" | grep -o '"token_value":"[^"]*' | cut -d'"' -f4)
+          echo "DEPLOY_API_KEY=$KEY" >> "$GITHUB_ENV"
+          echo "Seeded CanaryMesh ephemeral honeytoken into environment."
+
+      - name: Run Build & Test Suite
+        run: |
+          npm test
+          # If any rogue dependency or PR exfiltrates $DEPLOY_API_KEY and tests it,
+          # CanaryMesh immediately triggers an incident alert!</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: ATTACK SIMULATOR -->
+    <section class="view-panel" id="view-simulator">
+      <div class="panel-card">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">Interactive Attack Simulator</h2>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">
+              Verify detection in real-time by simulating an attacker who discovered a leaked honeytoken and attempted to query the service.
+            </p>
+          </div>
+        </div>
+
+        <div class="simulator-box">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+            <div class="form-group">
+              <label class="form-label" for="sim-token-select">Select Honeytoken to Test</label>
+              <select class="form-select" id="sim-token-select">
+                <option value="">Loading active tokens...</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="sim-tool-select">Adversary Tool Simulation</label>
+              <select class="form-select" id="sim-tool-select">
+                <option value="curl/8.4.0 (x86_64-pc-linux-gnu)">cURL CLI Tool</option>
+                <option value="python-requests/2.31.0">Python Automation Script (requests)</option>
+                <option value="aws-cli/2.15.15 Python/3.11.6">AWS CLI (aws sts get-caller-identity)</option>
+                <option value="PostmanRuntime/7.36.0">Postman Desktop Client</option>
+                <option value="sqlmap/1.8.2#stable">SQLMap Scanner Probe</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+            <div class="form-group">
+              <label class="form-label" for="sim-ip-input">Adversary Source IP</label>
+              <input class="form-input" id="sim-ip-input" value="198.51.100.42" placeholder="e.g. 198.51.100.42">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="sim-payload-input">Probed Request Payload (JSON)</label>
+              <input class="form-input" id="sim-payload-input" value='{"action":"list_users","role":"admin"}'>
+            </div>
+          </div>
+
+          <button class="btn-primary" id="btn-fire-simulation" style="background: linear-gradient(135deg, #ff0055 0%, #ff5500 100%);" onclick="runAttackSimulation()">
+            🎯 Simulate Adversary Breach Now
+          </button>
+
+          <div id="simulation-results-container" style="display:none; margin-top: 1.5rem;">
+            <div style="font-size: 0.85rem; font-weight: 700; color: var(--accent-emerald); margin-bottom: 6px;">
+              ✓ BREACH SIMULATED & INTERCEPTED
+            </div>
+            <div class="code-block" id="simulation-json-output"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- MODAL: DEPLOY HONEYTOKEN -->
+  <div class="modal-overlay" id="deploy-modal" aria-hidden="true" role="dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">Deploy New Honeytoken</div>
+        <button class="modal-close" onclick="closeDeployModal()" aria-label="Close modal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <label class="form-label">Select Deception Format</label>
+        <div class="token-type-grid" id="type-selector-grid">
+          <div class="type-option selected" data-type="ci_ephemeral" onclick="selectTokenType('ci_ephemeral')">
+            <div class="type-option-icon">⚡</div>
+            <div class="type-option-title">CI/CD Ephemeral</div>
+          </div>
+          <div class="type-option" data-type="aws_iam" onclick="selectTokenType('aws_iam')">
+            <div class="type-option-icon">☁️</div>
+            <div class="type-option-title">AWS IAM Key</div>
+          </div>
+          <div class="type-option" data-type="github_pat" onclick="selectTokenType('github_pat')">
+            <div class="type-option-icon">🐙</div>
+            <div class="type-option-title">GitHub PAT</div>
+          </div>
+          <div class="type-option" data-type="openai_key" onclick="selectTokenType('openai_key')">
+            <div class="type-option-icon">🤖</div>
+            <div class="type-option-title">OpenAI Key</div>
+          </div>
+          <div class="type-option" data-type="stripe_secret" onclick="selectTokenType('stripe_secret')">
+            <div class="type-option-icon">💳</div>
+            <div class="type-option-title">Stripe Secret</div>
+          </div>
+          <div class="type-option" data-type="database_url" onclick="selectTokenType('database_url')">
+            <div class="type-option-icon">🗄️</div>
+            <div class="type-option-title">Database URI</div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="token-label-input">Token Label / Purpose</label>
+          <input class="form-input" id="token-label-input" placeholder="e.g. k8s-prod-deployer-key" value="ci-deploy-runner-key">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="token-env-input">Target Placement Environment</label>
+          <input class="form-input" id="token-env-input" placeholder="e.g. github-actions, staging, developer-laptop" value="github-actions">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="token-ttl-select">Auto-Expiry / TTL</label>
+          <select class="form-select" id="token-ttl-select">
+            <option value="60">1 Hour (Ephemeral CI)</option>
+            <option value="120" selected>2 Hours (Standard Build)</option>
+            <option value="1440">24 Hours</option>
+            <option value="10080">7 Days</option>
+            <option value="0">Persistent (No Expiry)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="token-webhook-input">Custom Alert Webhook (Optional)</label>
+          <input class="form-input" id="token-webhook-input" placeholder="https://hooks.slack.com/services/... or Discord">
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeDeployModal()">Cancel</button>
+        <button class="btn-primary" id="btn-submit-token" onclick="submitCreateToken()">
+          Generate & Arm Token
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: REVEAL TOKEN -->
+  <div class="modal-overlay" id="reveal-modal" aria-hidden="true" role="dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title" style="color: var(--accent-emerald);">🛡️ Honeytoken Armed & Active</div>
+        <button class="modal-close" onclick="closeRevealModal()" aria-label="Close modal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+          Copy this credential now. For deception integrity, raw token values are never displayed again once you close this window.
+        </p>
+
+        <div class="form-group">
+          <label class="form-label">Raw Honeytoken Secret</label>
+          <div class="code-block">
+            <button class="code-copy-btn" onclick="copyText('revealed-raw-token')">Copy</button>
+            <span id="revealed-raw-token" style="word-break: break-all;"></span>
+          </div>
+        </div>
+
+        <div class="form-group" id="revealed-secret-group" style="display: none;">
+          <label class="form-label">Secret Access Key / Password</label>
+          <div class="code-block">
+            <button class="code-copy-btn" onclick="copyText('revealed-secret-comp')">Copy</button>
+            <span id="revealed-secret-comp" style="word-break: break-all;"></span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Decoy Trap Catch Endpoint</label>
+          <div class="code-block">
+            <button class="code-copy-btn" onclick="copyText('revealed-trap-url')">Copy</button>
+            <span id="revealed-trap-url" style="word-break: break-all;"></span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Deployment Instructions</label>
+          <div style="font-size: 0.85rem; color: var(--text-primary); line-height: 1.5; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px;" id="revealed-instructions"></div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-primary" onclick="closeRevealModal()">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: FORENSICS INSPECTOR -->
+  <div class="modal-overlay" id="forensics-modal" aria-hidden="true" role="dialog">
+    <div class="modal-content" style="max-width: 760px;">
+      <div class="modal-header">
+        <div class="modal-title">Forensic Breadcrumbs Inspection</div>
+        <button class="modal-close" onclick="closeForensicsModal()" aria-label="Close modal">&times;</button>
+      </div>
+
+      <div class="modal-body" id="forensics-modal-body">
+        <!-- Injected via JavaScript -->
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeForensicsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

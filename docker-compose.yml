@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  canarymesh:
+    build: .
+    container_name: canarymesh
+    ports:
+      - "8000:8000"
+    environment:
+      - CANARY_HOST=0.0.0.0
+      - CANARY_PORT=8000
+      - CANARY_PUBLIC_URL=http://localhost:8000
+      - CANARY_SECRET_KEY=change-this-production-secret-key-in-deployment
+      - CANARY_DATABASE_PATH=/app/data/canarymesh.db
+      - CANARY_DEFAULT_WEBHOOK_URL=
+      - CANARY_GEOIP_ENABLED=true
+      - CANARY_TRUST_PROXY_HEADERS=true
+    volumes:
+      - canary_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  canary_data:
+    driver: local

@@ -1,0 +1,45 @@
+name: Deception Demo — Ephemeral Honeytoken Seeding
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/canary-ci-seed-demo.yml'
+
+jobs:
+  build-and-protect:
+    name: Build with Honeytoken Deception Guard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Start Local CanaryMesh Instance (for demonstration)
+        run: |
+          pip install -r requirements.txt
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          sleep 3
+          curl http://127.0.0.1:8000/health
+
+      - name: Seed Ephemeral CI Honeytoken
+        run: |
+          chmod +x ./scripts/seed-ci.sh
+          CANARY_SERVER="http://127.0.0.1:8000" \
+          CANARY_TTL_MINUTES=45 \
+          ./scripts/seed-ci.sh
+
+      - name: Verify Seeded Environment
+        run: |
+          echo "Honeytoken injected: $CANARY_CI_RELEASE_KEY"
+          echo "Trap Endpoint: $CANARY_TRAP_ENDPOINT"
+
+      - name: Simulate Build & Verify Pipeline Integrity
+        run: |
+          python scripts/simulate_attack.py
