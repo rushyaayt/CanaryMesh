@@ -72,7 +72,75 @@ class Database:
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_token ON alerts(token_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_time ON alerts(timestamp);")
+
+            # Standalone decoy and cloud-provider events need no registered token.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS breach_logs (
+                    id TEXT PRIMARY KEY,
+                    token_type TEXT NOT NULL,
+                    source_ip TEXT NOT NULL,
+                    user_agent TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    path TEXT,
+                    action TEXT,
+                    details_json TEXT NOT NULL DEFAULT '{}'
+                );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_breach_logs_time ON breach_logs(timestamp);")
             conn.commit()
+
+    def record_breach(
+        self,
+        breach_id: str,
+        token_type: str,
+        source_ip: str,
+        user_agent: str,
+        path: Optional[str] = None,
+        action: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO breach_logs (
+                    id, token_type, source_ip, user_agent, timestamp, path, action, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    breach_id,
+                    token_type,
+                    source_ip,
+                    user_agent,
+                    now_iso,
+                    path,
+                    action,
+                    json.dumps(details or {}),
+                ),
+            )
+            conn.commit()
+        return self.get_breach(breach_id)  # type: ignore
+
+    def get_breach(self, breach_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT * FROM breach_logs WHERE id = ?", (breach_id,)).fetchone()
+            if row is None:
+                return None
+            breach = dict(row)
+            breach["details"] = json.loads(breach.pop("details_json") or "{}")
+            return breach
+
+    def list_breaches(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM breach_logs ORDER BY timestamp DESC LIMIT ?", (limit,)
+            ).fetchall()
+            breaches = []
+            for row in rows:
+                breach = dict(row)
+                breach["details"] = json.loads(breach.pop("details_json") or "{}")
+                breaches.append(breach)
+            return breaches
 
     def save_token(
         self,

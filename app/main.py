@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import alerts, gateway, seed, tokens
 from app.config import get_settings
 from app.database import get_db
+from app.routers import breaches, traps, webhooks, ws
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -62,6 +63,10 @@ app.include_router(tokens.router)
 app.include_router(seed.router)
 app.include_router(alerts.router)
 app.include_router(gateway.router)
+app.include_router(breaches.router)
+app.include_router(traps.router)
+app.include_router(webhooks.router)
+app.include_router(ws.router)
 
 # Mount Static Files
 os.makedirs(STATIC_DIR, exist_ok=True)

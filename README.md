@@ -259,13 +259,26 @@ Instant Slack/Discord webhook with the attacker's IP, country, ISP, user-agent, 
 | `GET` | `/api/v1/seed/quick-script.sh` | Downloadable bash injector for CI/CD runners. |
 | `GET` | `/api/v1/alerts` | List forensic breach incident logs. |
 | `GET` | `/api/v1/alerts/{id}` | Full forensic breakdown (raw headers, payload, GeoIP, client tool). |
+| `GET` | `/api/v1/breaches` | List persisted environment-file and cloud webhook breach events. |
 | `POST` | `/api/v1/alerts/simulate` | Fire a live breach simulation for testing and verification. |
+| `POST` | `/api/v1/webhooks/aws` | Authenticated AWS CloudTrail/EventBridge webhook receiver. |
+| `WS` | `/api/v1/ws/alerts` | Stream standalone breach events to connected dashboards. |
 | `ALL` | `/trap/{token_id}` | Universal decoy trap endpoint. |
+| `GET` | `/.env`, `/config.json` | Fake configuration-file traps; access is persisted as a breach event. |
 | `POST` | `/v1/chat/completions` | Decoy OpenAI API gateway. |
 | `ALL` | `/v1/charges` | Decoy Stripe charges gateway. |
 | `ALL` | `/api/aws/sts` | Decoy AWS STS gateway. |
 | `GET` | `/api/v1/stats` | High-level deception telemetry metrics. |
 | `GET` | `/health` | Service health status. |
+
+Standalone trap and AWS webhook breaches are stored in the SQLite `breach_logs`
+table and broadcast to WebSocket clients at `/api/v1/ws/alerts`. The existing
+`/v1/chat/completions` endpoint already records OpenAI-key probes through the
+decoy gateway. To accept AWS EventBridge events, set `CANARY_AWS_WEBHOOK_SECRET`
+and configure the EventBridge API destination to send it in the
+`x-canary-webhook-secret` header. Leave the secret unset to keep the receiver
+disabled. `CANARY_DEFAULT_WEBHOOK_URL` also receives standalone breach alerts
+through the existing Slack, Discord, or generic webhook integration.
 
 ---
 

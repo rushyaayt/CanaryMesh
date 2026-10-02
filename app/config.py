@@ -30,6 +30,9 @@ class Settings(BaseModel):
     default_webhook_url: Optional[str] = Field(
         default_factory=lambda: os.getenv("CANARY_DEFAULT_WEBHOOK_URL", None)
     )
+    aws_webhook_secret: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_AWS_WEBHOOK_SECRET", None)
+    )
 
     # Forensics & Network Telemetry
     geoip_enabled: bool = Field(
