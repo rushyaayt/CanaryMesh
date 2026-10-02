@@ -1,302 +1,163 @@
-<div align="center">
+# CanaryMesh
 
-```
-   ____                            __  __          _     
-  / ___|__ _ _ __   __ _ _ __ _   |  \/  | ___ ___| |__  
- | |   / _` | '_ \ / _` | '__| | | | |\/| |/ _ \ __| '_ \ 
- | |__| (_| | | | | (_| | |  | |_| | |  | |  __\__ \ | | |
-  \____\__,_|_| |_|\__,_|_|   \__, |_|  |_|\___|___/_| |_|
-                              |___/                        
-```
+**A self-hosted honeytoken and deception service for detecting exposed credentials and observing suspicious use.**
 
-# CanaryMesh — Honeytoken-as-a-Service (HaaS)
-### Active Cyber Deception & Ephemeral Supply-Chain Intrusion Detection
+CanaryMesh issues synthetic credentials and routes attempts to use them to decoy endpoints. When a token is tripped, the service records an alert with request and client context, updates token telemetry, and can send a notification to a configured webhook. The project is intended for controlled security testing and defensive monitoring.
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Deception](https://img.shields.io/badge/False%20Positives-0.0%25%20Guaranteed-00f5a0)](#threat-model--zero-false-positives)
-[![Tests](https://img.shields.io/badge/Tests-17%20Passing-brightgreen)](#automated-testing)
+> **Security notice:** The current `main` branch is an early-stage, self-hosted application. Its token-management, alert, statistics, and CI-seeding APIs do not require authentication. Do not expose it to the public internet or an untrusted network. Run it locally or behind strict network access controls while evaluating it. Do not use real credentials as honeytokens.
 
-*Deploy realistic, low-cost honeytokens across cloud infrastructure, developer environments, and CI/CD pipelines to catch credential misuse, lateral movement, and supply-chain attacks with instant high-fidelity alerts and forensic breadcrumbs.*
+## What it does
 
-</div>
+- Generates synthetic honeytokens in formats intended to resemble AWS IAM keys, GitHub personal access tokens, OpenAI keys, Stripe secrets, database URLs, bearer tokens, and CI credentials. These are decoys, not working provider credentials.
+- Provides decoy endpoints for token-specific traps and common API paths, including OpenAI-style chat completions, Stripe-style charges and balance, and an AWS STS-style endpoint.
+- Supports short-lived tokens for CI workflows and records their repository, workflow, and run metadata.
+- Stores tokens and breach alerts in a local SQLite database.
+- Captures request details such as source IP, user agent, method, path, headers, and payload, and derives basic threat context.
+- Displays the service dashboard and exposes an API for token and alert management.
+- Can deliver alerts to a configured default or per-token webhook.
 
----
+## Requirements
 
-## 💡 The Problem & The Fresh Paradigm
+- Python 3.10 or later
+- Git
+- Docker Engine with the Docker Compose plugin (optional, for container-based local testing)
 
-Traditional honeypots are static, expensive to maintain, and easily avoided by modern adversaries. Attackers rarely stumble into isolated honeypot servers; instead, they **scrape source code, compromise CI/CD runner logs, poison supply-chain dependencies, or hijack developer workstations**.
+## Install and run locally
 
-**CanaryMesh (Honeytoken-as-a-Service)** shifts deception from monolithic static traps into **lightweight, distributed, ephemeral artifacts**:
-- **Deception-as-Code**: Generate authentic-looking credentials (AWS IAM, GitHub PATs, OpenAI API keys, Stripe secrets, PostgreSQL URIs) directly into repos, `.env` files, and container images.
-- **Ephemeral CI/CD Seeding**: Inject dynamic honeytokens on-the-fly during pipeline runs (GitHub Actions, GitLab CI) with tight TTLs (e.g. 60 minutes). If any rogue dependency, compromised runner, or pull request exfiltrates and tests the secret, you are alerted within milliseconds.
-- **Zero False Positives**: Legitimate employees and services never use honeytokens. Any touch is a confirmed breach attempt.
-- **Authentic Decoy Trapping**: When an attacker tests the token, the Decoy Gateway emulates real provider error codes (OpenAI quota limits, AWS STS auth errors, Stripe expiration), keeping the adversary probing in a deception sandbox while extracting forensic telemetry.
-
----
-
-## 🏛️ Architecture & Deception Flow
-
-```
-                                      [ DECEPTION MESH ]
-                                               │
-               ┌───────────────────────────────┴──────────────────────────────┐
-               │                                                              │
-     [ 1. Seed & Deploy ]                                            [ 2. Adversary Touch ]
-  • CI/CD Pipeline Runners                                        • Discovered in Build Log
-  • Developer Workstations                                        • Scraped from Leaked Repo
-  • AWS/K8s ConfigMaps                                            • Exfiltrated by Malicious Dep
-               │                                                              │
-               ▼                                                              ▼
-     ┌──────────────────┐                                           ┌──────────────────┐
-     │ Ephemeral Honey- │                                           │ Adversary Probes │
-     │ token Generator  │                                           │  Decoy Gateway   │
-     └──────────────────┘                                           └────────┬─────────┘
-                                                                             │
-               ┌─────────────────────────────────────────────────────────────┘
-               ▼
-   [ 3. High-Fidelity Forensic Capture ]
-     ├── Client IP & True Proxy Resolution (CF / XFF)
-     ├── Tool Fingerprinting (cURL, Python, SQLMap, AWS CLI, Postman)
-     ├── Geolocation & Autonomous System Number (ASN)
-     ├── Full Request Headers, HTTP Method, Body Payload
-     └── Threat Severity & Post-TTL Context
-               │
-               ├─────────────────────────────────────────────┐
-               ▼                                             ▼
-   [ 4. Authentic Decoy Response ]              [ 5. Instant Alert Dispatch ]
-     • OpenAI: 429 Insufficient Quota             • Slack Block Kit Cards
-     • Stripe: 401 API Key Expired                • Discord Rich Embeds
-     • AWS STS: 403 InvalidClientTokenId          • Generic SIEM / Splunk / Datadog
-     • Microservice: 403 Missing IAM Scope        • Real-Time Cyber SOC Dashboard
-```
-
----
-
-## ✨ Core Features
-
-| Feature | Capability |
-| :--- | :--- |
-| **Realistic Honeytokens** | Generates authentic key formats: `AKIA...` (AWS), `ghp_...` (GitHub), `sk-proj-...` (OpenAI), `sk_live_...` (Stripe), `postgresql://...` (Database), and custom CI JWTs. |
-| **Ephemeral CI/CD Seeding** | 1-line integration for GitHub Actions & GitLab CI with auto-expiring TTLs (15 min to 24 hrs). |
-| **Decoy Trap Gateway** | Realistic honeypot endpoints that trick adversaries into continuing reconnaissance while capturing forensic telemetry. |
-| **Adversary Tool Fingerprinting** | Automatically detects attacker tool signatures (cURL, Python requests, Postman, SQLMap, Nikto, Nuclei, AWS CLI). |
-| **Multi-Channel Alert Dispatcher** | Ships incident alerts to Slack (Block Kit), Discord (Cyber Red Embeds), SIEM webhooks, and local audit logs. |
-| **Modern SOC Web Dashboard** | Cyberpunk dark-mode user interface with fleet inventory, real-time alert feed, forensic drawer, and 1-click attack simulator. |
-| **CLI & Automation Ready** | Bundled `haas` CLI for developers and `seed-ci.sh` shell injector. |
-| **Zero External Infrastructure** | Operates on Python 3.10+ and SQLite with WAL mode; zero mandatory cloud dependencies. |
-
----
-
-## 🚀 Quickstart
-
-### Option 1: Run with Docker Compose (Recommended)
+### 1. Get the source
 
 ```bash
-git clone https://github.com/rushyaayt/canarymesh.git
-cd canarymesh
-docker compose up -d
+git clone https://github.com/rushyaayt/CanaryMesh.git
+cd CanaryMesh
 ```
-The CanaryMesh server and SOC Dashboard will be live at **`http://localhost:8000/`**.
 
----
+### 2. Create a virtual environment and install dependencies
 
-### Option 2: Run Locally with Python
+**macOS / Linux**
 
 ```bash
-# 1. Clone & enter repository
-git clone https://github.com/rushyaayt/canarymesh.git
-cd canarymesh
-
-# 2. Initialize virtual environment
-python -m venv .venv
-# Windows (PowerShell)
-.\.venv\Scripts\Activate.ps1
-
-# Linux / macOS
+python3 -m venv .venv
 source .venv/bin/activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-pip install -e .
-
-# 4. Launch deception platform
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
----
+**Windows PowerShell**
 
-## 💻 CLI Usage (`haas`)
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-CanaryMesh includes a standalone command-line tool `haas` for developers, SecOps, and pipeline scripts:
+### 3. Configure and start the service
+
+Set a unique secret key for the local instance and bind to loopback for local use. The application otherwise defaults to listening on all interfaces and includes a development fallback key; do not use that fallback beyond an isolated local test.
+
+**macOS / Linux**
 
 ```bash
-# Generate a new honeytoken
-haas generate --type aws_iam --label "s3-backup-deployer" --ttl 120
-
-# Seed an ephemeral honeytoken into a CI run
-haas seed-ci --repo "my-org/payment-service" --workflow "release" --ttl 60 --export
-
-# List active honeytokens in the mesh
-haas list
-
-# View breach alerts and forensic breadcrumbs
-haas alerts --limit 10
-
-# Simulate an adversary probe to verify detection
-haas simulate --tool "curl/8.4.0" --ip "198.51.100.42"
+export CANARY_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export CANARY_HOST=127.0.0.1
+python -m uvicorn app.main:app --host "$CANARY_HOST" --port 8000
 ```
 
----
+**Windows PowerShell**
 
-## ⚡ CI/CD Integration Guide
-
-### 1. GitHub Actions Integration
-
-Add the following step to your `.github/workflows/ci.yml` before running untrusted steps or build tests:
-
-```yaml
-name: Production Build & Test
-on: [push, pull_request]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Seed CanaryMesh Ephemeral Honeytoken
-        run: |
-          RESPONSE=$(curl -s -X POST "${{ secrets.CANARYMESH_URL }}/api/v1/seed/ci" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "repository": "${{ github.repository }}",
-              "workflow": "${{ github.workflow }}",
-              "run_id": "${{ github.run_id }}",
-              "commit_sha": "${{ github.sha }}",
-              "ttl_minutes": 60,
-              "token_type": "ci_ephemeral"
-            }')
-          
-          # Ingest honeytoken as decoy secret
-          TOKEN_VAL=$(echo "$RESPONSE" | grep -o '"token_value":"[^"]*' | cut -d'"' -f4)
-          echo "CANARY_CI_RELEASE_KEY=$TOKEN_VAL" >> "$GITHUB_ENV"
-          echo "Armed ephemeral honeytoken for run ${{ github.run_id }}."
-
-      - name: Run Pipeline Steps
-        run: |
-          npm test
-          # If any dependency or PR attacker attempts to exfiltrate and use $CANARY_CI_RELEASE_KEY,
-          # CanaryMesh immediately sounds the breach alarm with zero false positives!
+```powershell
+$env:CANARY_SECRET_KEY = python -c "import secrets; print(secrets.token_urlsafe(48))"
+$env:CANARY_HOST = "127.0.0.1"
+python -m uvicorn app.main:app --host $env:CANARY_HOST --port 8000
 ```
 
----
+The service is available at `http://127.0.0.1:8000`. The SQLite database is created at `canarymesh.db` in the application working directory by default.
 
-### 2. Portable Shell Seeder (`scripts/seed-ci.sh`)
+## Verify the installation
 
-For any CI runner (GitLab CI, Jenkins, CircleCI):
+Open the dashboard at [http://127.0.0.1:8000/](http://127.0.0.1:8000/). Check the health endpoint and interactive API reference:
+
+- Health: `GET http://127.0.0.1:8000/health`
+- OpenAPI UI: `http://127.0.0.1:8000/docs`
+- OpenAPI schema: `http://127.0.0.1:8000/openapi.json`
+
+Generate a short-lived CI-style token:
 
 ```bash
-CANARY_SERVER="http://canarymesh.internal:8000" \
-CANARY_TTL_MINUTES=45 \
-./scripts/seed-ci.sh
+curl -sS -X POST http://127.0.0.1:8000/api/v1/seed/ci \
+  -H "Content-Type: application/json" \
+  -d '{"repository":"example/demo","workflow":"local-smoke-test","ttl_minutes":60}'
 ```
 
----
-
-## 🎯 Attack Simulation & Verification
-
-To verify your detection pipeline and witness real-time alerts without waiting for a real adversary:
+The response includes a `token_id`, a `trap_endpoint`, and the synthetic `token_value`. The raw value is returned at creation time; handle it as sensitive test data. To generate an alert, send a request to the returned trap endpoint, replacing `<trap_endpoint>` with its value:
 
 ```bash
-# Run the automated verification script
+curl -i -X POST "<trap_endpoint>" \
+  -H "Authorization: Bearer <token_value>" \
+  -H "Content-Type: application/json" \
+  -d '{"probe":"CanaryMesh local verification"}'
+```
+
+Review the recorded alerts at `http://127.0.0.1:8000/api/v1/alerts`. You can also run the included local simulation script after starting the service:
+
+```bash
 python scripts/simulate_attack.py
 ```
 
-Or test directly with `curl`:
-```bash
-# 1. Generate an OpenAI honeytoken
-curl -s -X POST http://localhost:8000/api/v1/tokens \
-  -H "Content-Type: application/json" \
-  -d '{"token_type": "openai_key", "label": "test-openai", "ttl_minutes": 30}'
+## API overview
 
-# 2. Simulate attacker querying OpenAI endpoint with the stolen key
-curl -i -X POST http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer sk-proj-a1b2c3d4e5f6..." \
-  -H "User-Agent: curl/8.4.0" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]}'
-```
-**Attacker receives:**
-```json
-HTTP/1.1 429 Too Many Requests
-openai-organization: org-prod-ai-workspace
+All paths below are relative to the service origin. See `/docs` for request and response schemas.
 
-{
-  "error": {
-    "message": "You exceeded your current quota, please check your plan and billing details.",
-    "type": "insufficient_quota",
-    "code": "insufficient_quota"
-  }
-}
-```
-**Security Team receives:**
-Instant Slack/Discord webhook with the attacker's IP, country, ISP, user-agent, headers, and precise honeytoken label!
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/v1/tokens` | Create a honeytoken |
+| `GET` | `/api/v1/tokens` | List tokens |
+| `GET` | `/api/v1/tokens/{token_id}` | Retrieve token details |
+| `DELETE` | `/api/v1/tokens/{token_id}` | Revoke a token |
+| `GET` | `/api/v1/stats` | Retrieve summary counts |
+| `POST` | `/api/v1/seed/ci` | Create a time-limited CI honeytoken |
+| `GET` | `/api/v1/alerts` | List breach alerts |
+| `GET` | `/api/v1/alerts/{alert_id}` | Retrieve alert details |
+| `POST` | `/api/v1/alerts/simulate` | Create a test alert for an existing token |
+| `GET` | `/trap/{token_id}` | Exercise a token-specific decoy endpoint |
 
----
+## Configuration
 
-## 📡 REST API Reference
+Configure the service through environment variables before starting it.
 
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `POST` | `/api/v1/tokens` | Generate a new honeytoken (AWS, GitHub, OpenAI, Stripe, CI, DB). |
-| `GET` | `/api/v1/tokens` | List all honeytokens with status, trigger count, and TTL. |
-| `GET` | `/api/v1/tokens/{id}` | Inspect a specific honeytoken. |
-| `DELETE`| `/api/v1/tokens/{id}` | Revoke an active honeytoken. |
-| `POST` | `/api/v1/seed/ci` | Dynamic 1-line ephemeral token provisioning for CI/CD runs. |
-| `GET` | `/api/v1/seed/quick-script.sh` | Downloadable bash injector for CI/CD runners. |
-| `GET` | `/api/v1/alerts` | List forensic breach incident logs. |
-| `GET` | `/api/v1/alerts/{id}` | Full forensic breakdown (raw headers, payload, GeoIP, client tool). |
-| `POST` | `/api/v1/alerts/simulate` | Fire a live breach simulation for testing and verification. |
-| `ALL` | `/trap/{token_id}` | Universal decoy trap endpoint. |
-| `POST` | `/v1/chat/completions` | Decoy OpenAI API gateway. |
-| `ALL` | `/v1/charges` | Decoy Stripe charges gateway. |
-| `ALL` | `/api/aws/sts` | Decoy AWS STS gateway. |
-| `GET` | `/api/v1/stats` | High-level deception telemetry metrics. |
-| `GET` | `/health` | Service health status. |
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `CANARY_HOST` | Uvicorn listen address | `0.0.0.0` |
+| `CANARY_PORT` | Service port | `8000` |
+| `CANARY_PUBLIC_URL` | Public base URL used when generating trap links | `http://localhost:8000` |
+| `CANARY_SECRET_KEY` | Secret used for honeytoken signatures | Development fallback; set a unique value |
+| `CANARY_DATABASE_PATH` | SQLite database file path | `canarymesh.db` |
+| `CANARY_DEFAULT_WEBHOOK_URL` | Default alert destination | Unset |
+| `CANARY_GEOIP_ENABLED` | Enable IP geolocation lookups | `true` |
+| `CANARY_TRUST_PROXY_HEADERS` | Use forwarded headers when determining client IP | `true` |
+| `CANARY_DECOY_DELAY_MS` | Simulated decoy response delay | `80` |
+| `CANARY_DEBUG` | Enable debug mode | `false` |
 
----
+Only enable forwarded-header trust when requests arrive through a trusted proxy configured to overwrite those headers. Treat webhook destinations and captured alert data as sensitive, and restrict outbound network access appropriately.
 
-## 🛡️ Threat Model & Zero False Positives
+## Run with Docker Compose
 
-| Attack Vector | How CanaryMesh Detects It |
-| :--- | :--- |
-| **Supply-Chain Dependency Attack** | A malicious npm/pip package scrapes environment variables during `npm install` or `pytest`. When the threat actor tries the key, CanaryMesh alerts on their infrastructure IP. |
-| **Compromised CI/CD Runner / Logs** | An adversary accesses build logs or runner artifacts containing the ephemeral key. The moment they test it, an alert triggers with their client IP. |
-| **Accidental Public Repo Leak** | An engineer commits a decoy `.env` file or AWS credentials. Automated GitHub scanner bots or threat actors immediately probe the credential, pinpointing the leak. |
-| **Lateral Movement / Insider Recon** | An attacker scanning internal git repositories or Kubernetes secrets discovers a decoy database URI and probes it. |
-
----
-
-## 🧪 Automated Testing
-
-CanaryMesh includes a test suite covering realistic token generation, cryptographic HMAC hashing, decoy gateways, CI seeder TTLs, and alert dispatching:
+The repository includes a Compose configuration for local evaluation:
 
 ```bash
-# Run test suite
-pytest -v tests/
-```
-```
-======================= 17 passed in 1.19s =======================
+docker compose up --build
 ```
 
----
+This configuration publishes port `8000` and contains a placeholder secret. Use it only for isolated local testing; do not expose the service or rely on the placeholder secret in a shared or production environment. Use `docker compose down` to stop the service. Review the Compose file and set deployment-specific secrets, network restrictions, and persistent storage before adapting it for any non-local environment.
 
-## 📄 License
+## Data and operational notes
 
-CanaryMesh is open-source software licensed under the [Apache License, Version 2.0](LICENSE).
+- SQLite data persists in the configured database file. Back it up using an application-consistent procedure and protect the file as incident data.
+- Alert records may contain request headers and payloads. Restrict access and retention according to your organization's policies.
+- Token creation responses include the raw synthetic value once. Store it only where it can be safely monitored, and revoke it when no longer needed.
+- IP geolocation depends on the configured lookup behavior and may not be available for every address. Treat location and source-IP data as investigative context, not definitive attribution.
+- This branch does not provide authenticated administration, signed cloud-provider webhooks, or a shared multi-instance event feed. Review the implementation and deployment risks before using it beyond a local, controlled evaluation.
 
+## License
 
-
+See the repository's license files for the applicable terms.
