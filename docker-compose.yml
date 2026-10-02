@@ -9,8 +9,8 @@ services:
     environment:
       - CANARY_HOST=0.0.0.0
       - CANARY_PORT=8000
-      - CANARY_PUBLIC_URL=http://localhost:8000
-      - CANARY_SECRET_KEY=change-this-production-secret-key-in-deployment
+      - CANARY_PUBLIC_URL=${CANARY_PUBLIC_URL:-http://localhost:8000}
+      - CANARY_SECRET_KEY=${CANARY_SECRET_KEY:?Set CANARY_SECRET_KEY in .env}
       - CANARY_DATABASE_PATH=/app/data/canarymesh.db
       - CANARY_DEFAULT_WEBHOOK_URL=${CANARY_DEFAULT_WEBHOOK_URL:-}
       - CANARY_ADMIN_API_KEY=${CANARY_ADMIN_API_KEY:-}

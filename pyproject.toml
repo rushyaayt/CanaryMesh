@@ -21,8 +21,11 @@ dependencies = [
     "redis>=5.0.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
 [project.scripts]
-canarymesh = "cli.main:cli"
+haas = "cli.haas:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
