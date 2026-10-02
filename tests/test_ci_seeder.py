@@ -1,9 +1,18 @@
 """Tests for CI/CD Ephemeral Seeding Engine"""
 
+import pytest
 from starlette.testclient import TestClient
+from app.config import get_settings
 from app.main import app
 
 client = TestClient(app)
+ADMIN_KEY = "admin-test-key-0123456789abcdef0123456789"
+ADMIN_HEADERS = {"Authorization": f"Bearer {ADMIN_KEY}"}
+
+
+@pytest.fixture(autouse=True)
+def configure_admin_key(monkeypatch):
+    monkeypatch.setattr(get_settings(), "admin_api_key", ADMIN_KEY)
 
 
 def test_seed_ci_endpoint():
@@ -17,6 +26,7 @@ def test_seed_ci_endpoint():
             "ttl_minutes": 30,
             "token_type": "ci_ephemeral",
         },
+        headers=ADMIN_HEADERS,
     )
     assert resp.status_code == 201
     data = resp.json()
@@ -38,6 +48,7 @@ def test_seed_ci_aws_format():
             "ttl_minutes": 15,
             "token_type": "aws_iam",
         },
+        headers=ADMIN_HEADERS,
     )
     assert resp.status_code == 201
     data = resp.json()

@@ -129,13 +129,10 @@ async def _handle_trap_hit(
             decoy_response_body=decoy_body,
             severity=severity,
             notified=False,
+            enqueue_notification=bool(token.get("webhook_url") or settings.default_webhook_url),
         )
         alert_record["tool_detected"] = ua_info["tool_detected"]
         await broadcast_alert(alert_record)
-
-        # 4. Persist webhook delivery and let the retry worker dispatch it.
-        if token.get("webhook_url") or settings.default_webhook_url:
-            db.create_notification(alert_record["id"])
 
     # 5. Return realistic decoy response
     return Response(

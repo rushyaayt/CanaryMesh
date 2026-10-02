@@ -15,7 +15,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Deception](https://img.shields.io/badge/False%20Positives-0.0%25%20Guaranteed-00f5a0)](#threat-model--zero-false-positives)
+[![Deception](https://img.shields.io/badge/Deception-High--confidence%20signals-00f5a0)](#threat-model)
 [![Tests](https://img.shields.io/badge/Tests-17%20Passing-brightgreen)](#automated-testing)
 
 *Deploy realistic, low-cost honeytokens across cloud infrastructure, developer environments, and CI/CD pipelines to catch credential misuse, lateral movement, and supply-chain attacks with instant high-fidelity alerts and forensic breadcrumbs.*
@@ -31,7 +31,7 @@ Traditional honeypots are static, expensive to maintain, and easily avoided by m
 **CanaryMesh (Honeytoken-as-a-Service)** shifts deception from monolithic static traps into **lightweight, distributed, ephemeral artifacts**:
 - **Deception-as-Code**: Generate authentic-looking credentials (AWS IAM, GitHub PATs, OpenAI API keys, Stripe secrets, PostgreSQL URIs) directly into repos, `.env` files, and container images.
 - **Ephemeral CI/CD Seeding**: Inject dynamic honeytokens on-the-fly during pipeline runs (GitHub Actions, GitLab CI) with tight TTLs (e.g. 60 minutes). If any rogue dependency, compromised runner, or pull request exfiltrates and tests the secret, you are alerted within milliseconds.
-- **Zero False Positives**: Legitimate employees and services never use honeytokens. Any touch is a confirmed breach attempt.
+- **High-Confidence Signals**: Honeytoken use is suspicious, but scanners, tests, deployment mistakes, and misconfiguration still need investigation.
 - **Authentic Decoy Trapping**: When an attacker tests the token, the Decoy Gateway emulates real provider error codes (OpenAI quota limits, AWS STS auth errors, Stripe expiration), keeping the adversary probing in a deception sandbox while extracting forensic telemetry.
 
 ---
@@ -99,6 +99,9 @@ cd canarymesh
 docker compose up -d
 ```
 The CanaryMesh server and SOC Dashboard will be live at **`http://localhost:8000/`**.
+Before starting it, add a randomly generated `CANARY_ADMIN_API_KEY` (at least
+32 characters) to your local `.env` file. The dashboard's **Admin Key** button
+uses this value; do not commit `.env`.
 
 ---
 
@@ -168,9 +171,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Seed CanaryMesh Ephemeral Honeytoken
+        env:
+          CANARY_ADMIN_API_KEY: ${{ secrets.CANARY_ADMIN_API_KEY }}
         run: |
           RESPONSE=$(curl -s -X POST "${{ secrets.CANARYMESH_URL }}/api/v1/seed/ci" \
             -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CANARY_ADMIN_API_KEY" \
             -d '{
               "repository": "${{ github.repository }}",
               "workflow": "${{ github.workflow }}",
@@ -189,7 +195,7 @@ jobs:
         run: |
           npm test
           # If any dependency or PR attacker attempts to exfiltrate and use $CANARY_CI_RELEASE_KEY,
-          # CanaryMesh immediately sounds the breach alarm with zero false positives!
+          # CanaryMesh alerts when the honeytoken is used; investigate the context of every signal.
 ```
 
 ---
@@ -220,6 +226,7 @@ Or test directly with `curl`:
 # 1. Generate an OpenAI honeytoken
 curl -s -X POST http://localhost:8000/api/v1/tokens \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $CANARY_ADMIN_API_KEY" \
   -d '{"token_type": "openai_key", "label": "test-openai", "ttl_minutes": 30}'
 
 # 2. Simulate attacker querying OpenAI endpoint with the stolen key
@@ -251,18 +258,18 @@ Instant Slack/Discord webhook with the attacker's IP, country, ISP, user-agent, 
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `POST` | `/api/v1/tokens` | Generate a new honeytoken (AWS, GitHub, OpenAI, Stripe, CI, DB). |
-| `GET` | `/api/v1/tokens` | List all honeytokens with status, trigger count, and TTL. |
-| `GET` | `/api/v1/tokens/{id}` | Inspect a specific honeytoken. |
-| `DELETE`| `/api/v1/tokens/{id}` | Revoke an active honeytoken. |
-| `POST` | `/api/v1/seed/ci` | Dynamic 1-line ephemeral token provisioning for CI/CD runs. |
+| `POST` | `/api/v1/tokens` | Generate a new honeytoken (admin key required). |
+| `GET` | `/api/v1/tokens` | List honeytokens (read-only or admin key required). |
+| `GET` | `/api/v1/tokens/{id}` | Inspect a honeytoken (read-only or admin key required). |
+| `DELETE`| `/api/v1/tokens/{id}` | Revoke an active honeytoken (admin key required). |
+| `POST` | `/api/v1/seed/ci` | Provision an ephemeral CI/CD token (admin key required). |
 | `GET` | `/api/v1/seed/quick-script.sh` | Downloadable bash injector for CI/CD runners. |
-| `GET` | `/api/v1/alerts` | List forensic breach incident logs (admin key required). |
-| `GET` | `/api/v1/alerts/{id}` | Full forensic breakdown (admin key required). |
-| `GET` | `/api/v1/breaches` | List persisted environment-file and cloud webhook events (admin key required). |
-| `GET` | `/api/v1/events` | Filter unified incident history by time, token, source, IP, and severity (admin key required). |
-| `GET` | `/api/v1/events/export` | Export filtered incident events as CSV (admin key required). |
-| `GET` | `/api/v1/notifications` | Inspect webhook delivery attempts (admin key required). |
+| `GET` | `/api/v1/alerts` | List forensic alerts (read-only or admin key required). |
+| `GET` | `/api/v1/alerts/{id}` | Full forensic breakdown (read-only or admin key required). |
+| `GET` | `/api/v1/breaches` | List persisted decoy and cloud webhook events (read-only or admin key required). |
+| `GET` | `/api/v1/events` | Search incident history (read-only or admin key required). |
+| `GET` | `/api/v1/events/export` | Export filtered incident events as CSV (read-only or admin key required). |
+| `GET` | `/api/v1/notifications` | Inspect webhook delivery attempts (read-only or admin key required). |
 | `POST` | `/api/v1/notifications/{id}/retry` | Retry a failed webhook delivery (admin key required). |
 | `POST` | `/api/v1/alerts/simulate` | Fire a live breach simulation for testing (admin key required). |
 | `POST` | `/api/v1/webhooks/aws` | Authenticated AWS CloudTrail/EventBridge webhook receiver. |
@@ -275,20 +282,28 @@ Instant Slack/Discord webhook with the attacker's IP, country, ISP, user-agent, 
 | `GET` | `/api/v1/stats` | High-level deception telemetry metrics. |
 | `GET` | `/health` | Service health status. |
 
-Set a high-entropy, URL-safe (for example, 64 hexadecimal characters)
-`CANARY_ADMIN_API_KEY` to enable incident history, event
-search/export, notification management, and the WebSocket feed. HTTP endpoints
-require `Authorization: Bearer <key>`; set the same value in
-`CANARY_ADMIN_API_KEY` when using the CLI `alerts` or `simulate` commands. For browser WebSockets, offer the
-subprotocols `canarymesh` and `canarymesh-auth.<key>`; use TLS and configure
-proxies not to log WebSocket subprotocol values. These sensitive endpoints
-return `503` until the key is configured.
+Set a high-entropy `CANARY_ADMIN_API_KEY` (at least 32 characters) for
+management operations: token creation/revocation, CI seeding, alert simulation,
+and notification retries. Optionally set a separate high-entropy
+`CANARY_READONLY_API_KEY` for read-only access. Send HTTP credentials as
+`Authorization: Bearer <key>`. Administrative changes are written to the audit
+log with a hashed key identifier, action, target, and client IP. For browser
+WebSockets, offer subprotocols `canarymesh` and `canarymesh-auth.<key>`; use
+TLS and configure proxies not to log WebSocket subprotocol values. Protected
+endpoints return `503` until at least one API key is configured.
+
+To rotate the admin key without interrupting clients, configure the new
+`CANARY_ADMIN_API_KEY` and temporarily set `CANARY_PREVIOUS_ADMIN_API_KEY` to
+the old value, restart, roll clients to the new key, then remove the previous
+key and restart again. The previous key has full admin privileges during the
+overlap; store both values in a secret manager and keep the overlap short.
 
 Standalone trap and AWS webhook events are stored in SQLite and broadcast to
 authorized WebSocket clients. `/api/v1/events` provides a unified view of
 token-trigger alerts and standalone trap/cloud events. Webhook deliveries are
 persisted, retried up to three times, recovered after a process restart, and
-can be inspected or manually retried. Delivery is at-least-once; use the event
+can be inspected or manually retried. Database leases coordinate concurrent
+workers and retries use bounded backoff. Delivery is at-least-once; use the event
 ID in notifications to deduplicate in downstream systems. The global webhook URL remains in runtime
 configuration rather than notification records; existing per-token webhook
 destinations remain part of the token registry. On startup, a one-time database
@@ -296,14 +311,47 @@ migration redacts common credential fields from existing captured headers,
 query parameters, and JSON request bodies. New non-JSON request bodies are
 stored only as redacted length metadata.
 
+All configured outbound webhook URLs must use HTTPS on port 443 and resolve
+only to public IP addresses. `CANARY_WEBHOOK_ALLOWED_HOSTS` is an explicit
+comma-separated exact-host allowlist for deployments that intentionally deliver
+to private destinations; allowlisting a host trusts every address it resolves
+to. DNS is revalidated at delivery time and redirects are disabled.
+
+For multiple app instances, set `CANARY_REDIS_URL` to enable Redis Pub/Sub for
+cross-instance WebSocket fan-out. If Redis is unavailable at startup, the app
+logs the condition and uses a process-local feed. Set `CANARY_RETENTION_DAYS`
+to a positive number to purge older event/audit records on startup and daily.
+Set `CANARY_WEBHOOK_RATE_LIMIT`, `CANARY_WEBHOOK_RATE_WINDOW_SECONDS`, and
+`CANARY_WEBHOOK_MAX_BODY_BYTES` to tune inbound AWS webhook limits.
+
+Run database integrity and backup checks from an administrative shell:
+
+```python
+from app.database import Database
+
+db = Database()
+print(db.integrity_check())
+print(db.backup_to("canarymesh-backup.db"))
+```
+
+Keep backups outside the application database directory, restrict access to
+them, and test restoration on a separate copy before relying on a backup.
+Restore only while the service is stopped, then run `integrity_check()` before
+restarting.
+
 To accept AWS EventBridge events, set `CANARY_AWS_WEBHOOK_SECRET`,
 `CANARY_AWS_ACCOUNT_ID`, and the exact `CANARY_AWS_PRINCIPAL_ARN`. Configure
-the EventBridge API destination to send the secret in the
-`x-canary-webhook-secret` header and forward the standard EventBridge envelope.
-The receiver checks the account, principal ARN, event timestamp (24-hour
-maximum age), and event ID; duplicate event IDs are ignored. Leave any required
-AWS setting unset to keep the receiver disabled. `CANARY_DEFAULT_WEBHOOK_URL`
-receives standalone breach alerts through Slack, Discord, or a generic webhook.
+an EventBridge rule to invoke a small Lambda forwarder. The forwarder must send
+the raw EventBridge JSON body with `x-canary-timestamp` (Unix seconds) and
+`x-canary-signature: sha256=<hex HMAC-SHA256>` headers. Sign the exact bytes as
+`HMAC-SHA256(secret, timestamp + "." + raw_body)`; retrieve the signing secret
+from AWS Secrets Manager. The receiver enforces a five-minute signature window,
+replay protection, rate/body-size limits, account and principal checks, a
+24-hour CloudTrail event age limit, and event-ID deduplication. Rotate the
+signing secret by updating both Secrets Manager and CanaryMesh. Leave any
+required AWS setting unset to keep the receiver disabled.
+`CANARY_DEFAULT_WEBHOOK_URL` receives standalone breach alerts through Slack,
+Discord, or a generic webhook.
 The decoy configuration response uses an `.invalid` host and an explicitly
 non-credential password to avoid resembling usable secrets.
 
@@ -313,10 +361,10 @@ canary secret; a synthetic key that does not correspond to an AWS principal
 cannot produce a CloudTrail event identifying the configured ARN. Do not grant
 the user permissions. Enable CloudTrail management events, then create an
 EventBridge rule matching the target account, `AWS API Call via CloudTrail`
-detail type, and `detail.userIdentity.arn` for that dedicated user. Send the
-standard EventBridge envelope to this service's HTTPS endpoint through an API
-Destination using the configured secret as the `x-canary-webhook-secret` API
-key header. Rotate or revoke the canary access key as part of retirement.
+detail type, and `detail.userIdentity.arn` for that dedicated user. Configure
+the rule's Lambda target with least-privilege permission to read the signing
+secret and invoke this service. Rotate or revoke the canary access key as part
+of retirement.
 
 The application uses SQLite WAL mode. Back up the configured database file
 with a SQLite-consistent backup (for example, SQLite's backup API); do not copy
@@ -327,12 +375,12 @@ proxy configured to remove caller-supplied forwarding headers and set its own.
 
 ---
 
-## 🛡️ Threat Model & Zero False Positives
+## 🛡️ Threat Model
 
 | Attack Vector | How CanaryMesh Detects It |
 | :--- | :--- |
-| **Supply-Chain Dependency Attack** | A malicious npm/pip package scrapes environment variables during `npm install` or `pytest`. When the threat actor tries the key, CanaryMesh alerts on their infrastructure IP. |
-| **Compromised CI/CD Runner / Logs** | An adversary accesses build logs or runner artifacts containing the ephemeral key. The moment they test it, an alert triggers with their client IP. |
+| **Supply-Chain Dependency Attack** | A malicious npm/pip package scrapes environment variables during `npm install` or `pytest`. If the token is used, CanaryMesh records an alert with available request context. |
+| **Compromised CI/CD Runner / Logs** | An adversary accesses build logs or runner artifacts containing the ephemeral key. If they test it, an alert records the client IP and other available context. |
 | **Accidental Public Repo Leak** | An engineer commits a decoy `.env` file or AWS credentials. Automated GitHub scanner bots or threat actors immediately probe the credential, pinpointing the leak. |
 | **Lateral Movement / Insider Recon** | An attacker scanning internal git repositories or Kubernetes secrets discovers a decoy database URI and probes it. |
 

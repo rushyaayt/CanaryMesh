@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-import httpx
+from app.services.webhook_security import post_webhook
 
 logger = logging.getLogger("canarymesh.notifier")
 
@@ -45,12 +45,7 @@ async def send_webhook_alert(webhook_url: str, breach_info: dict[str, Any]) -> b
 
 
 async def _post_notification(webhook_url: str, payload: dict[str, Any]) -> bool:
-    try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            response = await client.post(webhook_url, json=payload)
-        if response.is_success:
-            return True
-        logger.warning("Breach notification webhook returned HTTP %d", response.status_code)
-    except httpx.HTTPError as exc:
-        logger.error("Failed to deliver breach notification (%s)", type(exc).__name__)
-    return False
+    delivered = await post_webhook(webhook_url, payload)
+    if not delivered:
+        logger.warning("Breach notification failed or its HTTPS destination was rejected")
+    return delivered

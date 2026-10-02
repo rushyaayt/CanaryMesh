@@ -3,11 +3,11 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.database import get_db
-from app.services.auth import require_admin_access
+from app.services.auth import AdminPrincipal, require_admin_access, require_read_access
 
 router = APIRouter(prefix="/api/v1", tags=["Alerts & Forensics"])
 
@@ -34,7 +34,7 @@ def _safe_csv_value(value: Any) -> Any:
 @router.get("/breaches", summary="List persisted standalone breach events")
 def list_breaches(
     limit: int = Query(50, ge=1, le=200),
-    _authorized: bool = Depends(require_admin_access),
+    _authorized: AdminPrincipal = Depends(require_read_access),
 ) -> list[dict[str, Any]]:
     return get_db().list_breaches(limit=limit)
 
@@ -49,7 +49,7 @@ def list_events(
     source: str | None = Query(default=None, pattern="^(token|decoy|aws)$"),
     since: datetime | None = None,
     until: datetime | None = None,
-    _authorized: bool = Depends(require_admin_access),
+    _authorized: AdminPrincipal = Depends(require_read_access),
 ) -> list[dict[str, Any]]:
     since_utc = _utc_datetime(since)
     until_utc = _utc_datetime(until)
@@ -77,7 +77,7 @@ def export_events(
     source: str | None = Query(default=None, pattern="^(token|decoy|aws)$"),
     since: datetime | None = None,
     until: datetime | None = None,
-    _authorized: bool = Depends(require_admin_access),
+    _authorized: AdminPrincipal = Depends(require_read_access),
 ):
     from csv import DictWriter
     from io import StringIO
@@ -118,15 +118,24 @@ def export_events(
 @router.get("/notifications", summary="Inspect webhook delivery attempts")
 def list_notifications(
     limit: int = Query(100, ge=1, le=500),
-    _authorized: bool = Depends(require_admin_access),
+    _authorized: AdminPrincipal = Depends(require_read_access),
 ) -> list[dict[str, Any]]:
     return get_db().list_notifications(limit=limit)
+
+
+@router.get("/audit", summary="List administrative action audit records")
+def list_admin_audit(
+    limit: int = Query(100, ge=1, le=500),
+    _authorized: AdminPrincipal = Depends(require_read_access),
+) -> list[dict[str, Any]]:
+    return get_db().list_admin_actions(limit=limit)
 
 
 @router.post("/notifications/{notification_id}/retry", status_code=status.HTTP_202_ACCEPTED)
 def retry_notification(
     notification_id: int,
-    _authorized: bool = Depends(require_admin_access),
+    request: Request,
+    actor: AdminPrincipal = Depends(require_admin_access),
 ):
     db = get_db()
     if not db.retry_notification(notification_id):
@@ -137,4 +146,11 @@ def retry_notification(
             status_code=409,
             detail="Only failed notification deliveries can be retried",
         )
+    db.record_admin_action(
+        actor.role,
+        actor.key_id,
+        "notification.retry",
+        str(notification_id),
+        request.client.host if request.client else "unknown",
+    )
     return {"status": "queued", "notification_id": notification_id}

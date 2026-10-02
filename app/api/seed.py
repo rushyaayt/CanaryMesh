@@ -1,11 +1,12 @@
 """CanaryMesh Ephemeral CI/CD Seeding API"""
 
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from app.config import get_settings
 from app.core.generators import compute_token_hash, generate_honeytoken
 from app.database import get_db
 from app.models import CISeedRequest, CISeedResponse, TokenType
+from app.services.auth import AdminPrincipal, require_admin_access
 
 router = APIRouter(prefix="/api/v1/seed", tags=["CI/CD Seeding"])
 
@@ -16,9 +17,17 @@ router = APIRouter(prefix="/api/v1/seed", tags=["CI/CD Seeding"])
     status_code=status.HTTP_201_CREATED,
     summary="Seed ephemeral honeytoken into a CI/CD pipeline",
 )
-def seed_ci_honeytoken(req: CISeedRequest):
+async def seed_ci_honeytoken(
+    req: CISeedRequest,
+    request: Request,
+    actor: AdminPrincipal = Depends(require_admin_access),
+):
     settings = get_settings()
     db = get_db()
+    if req.webhook_url:
+        from app.services.webhook_security import validate_webhook_url
+
+        await validate_webhook_url(req.webhook_url)
 
     label = f"ci-{req.repository.replace('/', '-')}-{req.workflow}"
     token_id, raw_token, secret_comp, display_token, _ = generate_honeytoken(req.token_type, label)
@@ -72,6 +81,10 @@ def seed_ci_honeytoken(req: CISeedRequest):
         webhook_url=req.webhook_url,
         metadata=metadata,
     )
+    db.record_admin_action(
+        actor.role, actor.key_id, "token.seed_ci", token_id,
+        request.client.host if request.client else "unknown",
+    )
 
     return CISeedResponse(
         token_id=token_id,
@@ -97,6 +110,7 @@ def get_quick_script():
 set -euo pipefail
 
 CANARY_SERVER="${{CANARY_SERVER:-{settings.public_url}}}"
+CANARY_ADMIN_API_KEY="${{CANARY_ADMIN_API_KEY:-}}"
 REPO_NAME="${{GITHUB_REPOSITORY:-local/dev}}"
 WORKFLOW_NAME="${{GITHUB_WORKFLOW:-ci-test}}"
 RUN_ID="${{GITHUB_RUN_ID:-001}}"
@@ -106,6 +120,7 @@ echo "[CanaryMesh] Requesting ephemeral honeytoken for $REPO_NAME ($WORKFLOW_NAM
 
 RESPONSE=$(curl -s -X POST "$CANARY_SERVER/api/v1/seed/ci" \\
   -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $CANARY_ADMIN_API_KEY" \\
   -d '{{"repository": "'"$REPO_NAME"'", "workflow": "'"$WORKFLOW_NAME"'", "run_id": "'"$RUN_ID"'", "commit_sha": "'"$COMMIT"'", "ttl_minutes": 60}}')
 
 TOKEN_VAL=$(echo "$RESPONSE" | grep -o '"token_value":"[^"]*' | cut -d'"' -f4)

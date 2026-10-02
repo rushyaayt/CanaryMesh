@@ -34,6 +34,8 @@ function configureAdminKey() {
   if (entered === null) return;
   if (entered.trim()) sessionStorage.setItem("canaryAdminApiKey", entered.trim());
   else sessionStorage.removeItem("canaryAdminApiKey");
+  loadStats();
+  loadTokens();
   loadAlerts();
   connectLiveAlerts();
 }
@@ -82,7 +84,7 @@ function switchTab(tabName) {
 // --- Load Stats ---
 async function loadStats() {
   try {
-    const res = await fetch("/api/v1/stats");
+    const res = await adminFetch("/api/v1/stats");
     if (!res.ok) return;
     const data = await res.json();
 
@@ -110,7 +112,7 @@ async function loadStats() {
 async function loadTokens() {
   const tbody = document.getElementById("tokens-table-body");
   try {
-    const res = await fetch("/api/v1/tokens");
+    const res = await adminFetch("/api/v1/tokens");
     if (!res.ok) throw new Error("Failed to fetch tokens");
     const tokens = await res.json();
     cachedTokens = tokens;
@@ -264,7 +266,7 @@ async function submitCreateToken() {
   const webhook = document.getElementById("token-webhook-input").value.trim() || null;
 
   try {
-    const res = await fetch("/api/v1/tokens", {
+    const res = await adminFetch("/api/v1/tokens", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -378,7 +380,7 @@ async function generateCISeed() {
   btn.innerText = "Seeding...";
 
   try {
-    const res = await fetch("/api/v1/seed/ci", {
+    const res = await adminFetch("/api/v1/seed/ci", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -499,7 +501,7 @@ async function testToken(tokenId) {
 async function revokeToken(tokenId) {
   if (!confirm(`Are you sure you want to revoke honeytoken ${tokenId}?`)) return;
   try {
-    const res = await fetch(`/api/v1/tokens/${tokenId}`, { method: "DELETE" });
+    const res = await adminFetch(`/api/v1/tokens/${tokenId}`, { method: "DELETE" });
     if (res.ok) {
       loadTokens();
       loadStats();

@@ -1,11 +1,17 @@
 """Tests for incident authentication, decoy traps, persistence, and webhooks."""
 
 import asyncio
+import hashlib
+import hmac
 import json
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
+import socket
 
+import pytest
+from fastapi import HTTPException
 from starlette.testclient import TestClient
 
 from app.config import get_settings
@@ -29,6 +35,26 @@ def _aws_payload(event_id: str = "event-test-123") -> dict:
             "userAgent": "aws-cli/2",
         },
     }
+
+
+def _signed_aws_request(payload: dict, timestamp: int | None = None) -> tuple[bytes, dict[str, str]]:
+    body = json.dumps(payload).encode("utf-8")
+    timestamp_text = str(timestamp or int(time.time()))
+    signature = hmac.new(
+        AWS_WEBHOOK_SECRET.encode("utf-8"),
+        timestamp_text.encode("ascii") + b"." + body,
+        hashlib.sha256,
+    ).hexdigest()
+    return body, {
+        "content-type": "application/json",
+        "x-canary-timestamp": timestamp_text,
+        "x-canary-signature": f"sha256={signature}",
+    }
+
+
+def _post_signed_aws(client, payload: dict, timestamp: int | None = None):
+    body, headers = _signed_aws_request(payload, timestamp)
+    return client.post("/api/v1/webhooks/aws", content=body, headers=headers)
 
 
 def test_config_trap_persists_breach_and_streams_live_alert(monkeypatch):
@@ -131,14 +157,14 @@ def test_aws_webhook_requires_configured_secret(monkeypatch):
         unauthorized = client.post("/api/v1/webhooks/aws", json=payload)
         wrong_secret = client.post(
             "/api/v1/webhooks/aws",
-            json=payload,
-            headers={"x-canary-webhook-secret": "incorrect"},
+            content=json.dumps(payload),
+            headers={
+                "content-type": "application/json",
+                "x-canary-timestamp": str(int(time.time())),
+                "x-canary-signature": "incorrect",
+            },
         )
-        accepted = client.post(
-            "/api/v1/webhooks/aws",
-            json=payload,
-            headers={"x-canary-webhook-secret": AWS_WEBHOOK_SECRET},
-        )
+        accepted = _post_signed_aws(client, payload)
 
     assert unauthorized.status_code == 401
     assert wrong_secret.status_code == 401
@@ -159,20 +185,12 @@ def test_aws_webhook_rejects_wrong_account_or_principal(monkeypatch):
     payload = _aws_payload("event-wrong-account")
     payload["account"] = "999999999999"
     with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/webhooks/aws",
-            json=payload,
-            headers={"x-canary-webhook-secret": AWS_WEBHOOK_SECRET},
-        )
+        response = _post_signed_aws(client, payload)
         wrong_principal_payload = _aws_payload("event-wrong-principal")
         wrong_principal_payload["detail"]["userIdentity"]["arn"] = (
             "arn:aws:iam::123456789012:user/not-the-canary"
         )
-        wrong_principal = client.post(
-            "/api/v1/webhooks/aws",
-            json=wrong_principal_payload,
-            headers={"x-canary-webhook-secret": AWS_WEBHOOK_SECRET},
-        )
+        wrong_principal = _post_signed_aws(client, wrong_principal_payload)
     assert response.status_code == 403
     assert wrong_principal.status_code == 403
 
@@ -186,11 +204,7 @@ def test_aws_webhook_rejects_expired_event(monkeypatch):
     payload["detail"]["eventTime"] = "2020-01-01T00:00:00Z"
 
     with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/webhooks/aws",
-            json=payload,
-            headers={"x-canary-webhook-secret": AWS_WEBHOOK_SECRET},
-        )
+        response = _post_signed_aws(client, payload)
     assert response.status_code == 400
 
 
@@ -201,17 +215,11 @@ def test_aws_webhook_deduplicates_replayed_event(monkeypatch):
     monkeypatch.setattr(settings, "aws_honeytoken_principal_arn", "arn:aws:iam::123456789012:user/canary")
     payload = _aws_payload("event-idempotent-test")
     with TestClient(app) as client:
-        first = client.post(
-            "/api/v1/webhooks/aws",
-            json=payload,
-            headers={"x-canary-webhook-secret": AWS_WEBHOOK_SECRET},
-        )
-        second = client.post(
-            "/api/v1/webhooks/aws",
-            json=payload,
-            headers={"x-canary-webhook-secret": AWS_WEBHOOK_SECRET},
-        )
-    assert first.status_code == second.status_code == 200
+        body, headers = _signed_aws_request(payload)
+        first = client.post("/api/v1/webhooks/aws", content=body, headers=headers)
+        second = client.post("/api/v1/webhooks/aws", content=body, headers=headers)
+    assert first.status_code == 200
+    assert second.status_code == 409
     assert sum(
         event.get("event_id") == "event-idempotent-test"
         for event in get_db().list_breaches(limit=100)
@@ -223,12 +231,27 @@ def test_aws_webhook_is_disabled_without_secret(monkeypatch):
     monkeypatch.setattr(settings, "aws_webhook_secret", None)
 
     with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/webhooks/aws",
-            json=_aws_payload("disabled-test"),
-        )
+        response = client.post("/api/v1/webhooks/aws", json=_aws_payload("disabled-test"))
 
     assert response.status_code == 503
+
+
+def test_aws_webhook_rejects_stale_signature_and_oversized_payload(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "aws_webhook_secret", AWS_WEBHOOK_SECRET)
+    payload = _aws_payload("stale-signature")
+    body, headers = _signed_aws_request(payload, int(time.time()) - 301)
+    with TestClient(app) as client:
+        stale = client.post("/api/v1/webhooks/aws", content=body, headers=headers)
+
+        monkeypatch.setattr(settings, "webhook_max_body_bytes", 32)
+        oversized = client.post(
+            "/api/v1/webhooks/aws",
+            content=b"x" * 33,
+            headers={"content-type": "application/json"},
+        )
+    assert stale.status_code == 401
+    assert oversized.status_code == 413
 
 
 def test_event_history_requires_admin_auth_and_supports_filtering(monkeypatch):
@@ -259,15 +282,169 @@ def test_sensitive_history_fails_closed_without_admin_key(monkeypatch):
     assert response.status_code == 503
 
 
+def test_readonly_key_cannot_mutate_management_endpoints(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "admin_api_key", ADMIN_KEY)
+    monkeypatch.setattr(settings, "readonly_api_key", "viewer-key-0123456789abcdef0123456789")
+    with TestClient(app) as client:
+        read = client.get(
+            "/api/v1/tokens",
+            headers={"Authorization": "Bearer viewer-key-0123456789abcdef0123456789"},
+        )
+        create = client.post(
+            "/api/v1/tokens",
+            json={"token_type": "ci_ephemeral", "label": "viewer-denied"},
+            headers={"Authorization": "Bearer viewer-key-0123456789abcdef0123456789"},
+        )
+        created = client.post(
+            "/api/v1/tokens",
+            json={"token_type": "ci_ephemeral", "label": "admin-created"},
+            headers={"Authorization": f"Bearer {ADMIN_KEY}"},
+        )
+        audit = client.get(
+            "/api/v1/audit",
+            headers={"Authorization": "Bearer viewer-key-0123456789abcdef0123456789"},
+        )
+    assert read.status_code == 200
+    assert create.status_code == 403
+    assert created.status_code == 201
+    assert any(entry["action"] == "token.create" for entry in audit.json())
+
+
+def test_previous_admin_key_supports_staged_rotation(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "admin_api_key", ADMIN_KEY)
+    monkeypatch.setattr(
+        settings, "previous_admin_api_key", "previous-admin-0123456789abcdef0123456789"
+    )
+    with TestClient(app) as client:
+        old_key_works_during_rotation = client.get(
+            "/api/v1/stats",
+            headers={"Authorization": "Bearer previous-admin-0123456789abcdef0123456789"},
+        )
+    assert old_key_works_during_rotation.status_code == 200
+
+
+def test_outbound_webhook_url_rejects_http_and_loopback():
+    from app.services.webhook_security import validate_webhook_url
+
+    with pytest.raises(HTTPException) as insecure:
+        asyncio.run(validate_webhook_url("http://example.com/hook"))
+    with pytest.raises(HTTPException) as loopback:
+        asyncio.run(validate_webhook_url("https://127.0.0.1/hook"))
+    with pytest.raises(HTTPException) as malformed:
+        asyncio.run(validate_webhook_url("https://example.com:invalid/hook"))
+    assert insecure.value.status_code == 422
+    assert loopback.value.status_code == 422
+    assert malformed.value.status_code == 422
+
+
+def test_webhook_resolver_rejects_mixed_public_and_private_dns(monkeypatch):
+    import app.services.webhook_security as webhook_security
+
+    class FakeLoop:
+        async def getaddrinfo(self, *_args, **_kwargs):
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)),
+            ]
+
+    monkeypatch.setattr(webhook_security.asyncio, "get_running_loop", lambda: FakeLoop())
+    resolver = webhook_security.PublicAddressResolver()
+    with pytest.raises(OSError):
+        asyncio.run(resolver.resolve("mixed.example", 443, family=socket.AF_UNSPEC))
+    monkeypatch.setattr(get_settings(), "webhook_allowed_hosts", ["mixed.example"])
+    assert len(
+        asyncio.run(resolver.resolve("mixed.example", 443, family=socket.AF_UNSPEC))
+    ) == 2
+
+    class MetadataLoop:
+        async def getaddrinfo(self, *_args, **_kwargs):
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 443)),
+            ]
+
+    monkeypatch.setattr(webhook_security.asyncio, "get_running_loop", lambda: MetadataLoop())
+    with pytest.raises(OSError):
+        asyncio.run(resolver.resolve("mixed.example", 443, family=socket.AF_UNSPEC))
+
+
+def test_webhook_rate_limit_uses_atomic_database_counter(tmp_path):
+    db = Database(str(tmp_path / "rate-limit.db"))
+    key = f"aws:test:{uuid.uuid4().hex}"
+    assert db.check_webhook_rate_limit(key, limit=1, window_seconds=60)
+    assert not db.check_webhook_rate_limit(key, limit=1, window_seconds=60)
+
+
+def test_database_backup_is_integrity_checked(tmp_path):
+    source_path = tmp_path / "source.db"
+    backup_path = tmp_path / "backup.db"
+    db = Database(str(source_path))
+    db.record_breach(
+        breach_id="backup-test-event",
+        token_type="Environment File Scrape",
+        source_ip="203.0.113.1",
+        user_agent="backup-test",
+    )
+    assert db.integrity_check() == "ok"
+    assert db.backup_to(str(backup_path)) == "ok"
+    restored = Database(str(backup_path))
+    assert restored.integrity_check() == "ok"
+    assert restored.get_breach("backup-test-event") is not None
+
+
+def test_event_retention_purges_old_breaches_and_deliveries(tmp_path):
+    db_path = tmp_path / "retention.db"
+    db = Database(str(db_path))
+    event = db.record_breach(
+        breach_id="retention-test-event",
+        token_type="Environment File Scrape",
+        source_ip="203.0.113.2",
+        user_agent="retention-test",
+        enqueue_notification=True,
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE breach_logs SET timestamp = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", event["id"]),
+        )
+        connection.execute(
+            "UPDATE notification_deliveries SET created_at = ? WHERE event_id = ?",
+            ("2000-01-01T00:00:00+00:00", event["id"]),
+        )
+    assert db.purge_old_events(retention_days=1) == 1
+    assert db.get_breach(event["id"]) is None
+    assert db.list_notifications() == []
+
+
+def test_expired_final_notification_lease_becomes_failed(tmp_path):
+    db_path = tmp_path / "expired-lease.db"
+    db = Database(str(db_path))
+    notification = db.create_notification("missing-event")
+    claim = db.claim_notification("worker-one", notification_id=notification["id"])
+    assert claim is not None
+    db.update_notification(
+        notification["id"], "processing", 3, worker_id="worker-one"
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE notification_deliveries SET lease_until = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", notification["id"]),
+        )
+
+    assert db.claim_notification("worker-two") is None
+    terminal = db.get_notification(notification["id"])
+    assert terminal["status"] == "failed"
+    assert terminal["last_error"] == "Final delivery lease expired"
+
+
 def test_notification_delivery_retries_and_survives_failure(monkeypatch, tmp_path):
     import app.services.alert_engine as alert_engine
 
-    db = Database(str(tmp_path / "notifications.db"))
+    db_path = tmp_path / "notifications.db"
+    db = Database(str(db_path))
     monkeypatch.setattr(alert_engine, "get_db", lambda: db)
     monkeypatch.setattr(get_settings(), "default_webhook_url", "https://hooks.example.invalid")
-
-    async def no_wait(_seconds):
-        return None
 
     attempts = 0
 
@@ -276,7 +453,6 @@ def test_notification_delivery_retries_and_survives_failure(monkeypatch, tmp_pat
         attempts += 1
         return False
 
-    monkeypatch.setattr(alert_engine.asyncio, "sleep", no_wait)
     monkeypatch.setattr(alert_engine, "send_webhook_alert", fail_delivery)
     breach = asyncio.run(
         alert_engine.register_breach(
@@ -285,7 +461,13 @@ def test_notification_delivery_retries_and_survives_failure(monkeypatch, tmp_pat
         )
     )
     notification = db.list_notifications()[0]
-    asyncio.run(alert_engine.process_notification(notification["id"]))
+    for _ in range(3):
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                "UPDATE notification_deliveries SET next_attempt_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), notification["id"]),
+            )
+        asyncio.run(alert_engine.process_notification(notification["id"]))
 
     failed = db.get_notification(notification["id"])
     assert attempts == 3
@@ -300,6 +482,29 @@ def test_notification_delivery_retries_and_survives_failure(monkeypatch, tmp_pat
     asyncio.run(alert_engine.process_notification(notification["id"]))
     assert db.get_notification(notification["id"])["status"] == "sent"
     assert db.get_event(breach["id"])["source_ip"] == "203.0.113.9"
+
+
+def test_notification_outbox_is_transactional_and_claimed_once(monkeypatch, tmp_path):
+    import app.services.alert_engine as alert_engine
+
+    db = Database(str(tmp_path / "outbox.db"))
+    monkeypatch.setattr(alert_engine, "get_db", lambda: db)
+    monkeypatch.setattr(
+        get_settings(), "default_webhook_url", "https://hooks.example.invalid"
+    )
+    breach = asyncio.run(
+        alert_engine.register_breach(
+            token_type="Environment File Scrape",
+            source_ip="203.0.113.10",
+        )
+    )
+    notification = db.list_notifications()[0]
+    first_claim = db.claim_notification("worker-one")
+    second_claim = db.claim_notification("worker-two")
+
+    assert notification["event_id"] == breach["id"]
+    assert first_claim is not None
+    assert second_claim is None
 
 
 def test_notification_worker_uses_token_specific_webhook(monkeypatch, tmp_path):

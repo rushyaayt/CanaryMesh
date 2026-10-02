@@ -4,8 +4,8 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
-import httpx
 from app.config import get_settings
+from app.services.webhook_security import post_webhook
 
 logger = logging.getLogger("canarymesh.dispatcher")
 
@@ -51,7 +51,7 @@ def build_slack_blocks(alert: Dict[str, Any]) -> Dict[str, Any]:
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": "*CanaryMesh Deception Mesh* | Zero False Positive Signal",
+                        "text": "*CanaryMesh Deception Mesh* | High-Confidence Security Signal",
                     }
                 ],
             },
@@ -107,37 +107,24 @@ async def dispatch_alert(alert_data: Dict[str, Any], custom_webhook_url: Optiona
         logger.info("No webhook URL configured; alert recorded to SQLite database and console only.")
         return False
 
-    try:
-        payload: Dict[str, Any]
-        if "hooks.slack.com" in target_url:
-            payload = build_slack_blocks(alert_data)
-        elif "discord.com/api/webhooks" in target_url:
-            payload = build_discord_embed(alert_data)
-        else:
-            # Generic SIEM / JSON Webhook
-            payload = {
-                "event": "canarymesh.honeytoken.triggered",
-                "alert": alert_data,
-                "schema_version": "1.0",
-            }
+    payload: Dict[str, Any]
+    if "hooks.slack.com" in target_url:
+        payload = build_slack_blocks(alert_data)
+    elif "discord.com/api/webhooks" in target_url:
+        payload = build_discord_embed(alert_data)
+    else:
+        # Generic SIEM / JSON Webhook
+        payload = {
+            "event": "canarymesh.honeytoken.triggered",
+            "alert": alert_data,
+            "schema_version": "1.0",
+        }
 
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            resp = await client.post(target_url, json=payload)
-            if resp.status_code in [200, 204]:
-                logger.info("Successfully delivered alert to webhook host %s", _webhook_host(target_url))
-                return True
-            else:
-                logger.warning(
-                    "Webhook host %s returned non-success status %d",
-                    _webhook_host(target_url),
-                    resp.status_code,
-                )
-                return False
-
-    except Exception as exc:
-        logger.error(
-            "Failed to deliver alert to webhook host %s (%s)",
-            _webhook_host(target_url),
-            type(exc).__name__,
-        )
-        return False
+    if await post_webhook(target_url, payload):
+        logger.info("Successfully delivered alert to webhook host %s", _webhook_host(target_url))
+        return True
+    logger.warning(
+        "Webhook delivery to host %s failed or was rejected",
+        _webhook_host(target_url),
+    )
+    return False

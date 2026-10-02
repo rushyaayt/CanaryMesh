@@ -2,7 +2,7 @@
 
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from app.core.dispatcher import dispatch_alert
 from app.core.forensics import (
     analyze_user_agent,
@@ -15,7 +15,7 @@ from app.core.generators import compute_token_hash
 from app.database import get_db
 from app.models import AlertRecord, SimulationRequest
 from app.services.alert_engine import broadcast_alert
-from app.services.auth import require_admin_access
+from app.services.auth import AdminPrincipal, require_admin_access, require_read_access
 
 router = APIRouter(prefix="/api/v1", tags=["Alerts & Forensics"])
 
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/v1", tags=["Alerts & Forensics"])
 def list_alerts(
     token_id: Optional[str] = Query(None, description="Filter alerts by specific honeytoken ID"),
     limit: int = Query(50, ge=1, le=200),
-    _authorized: bool = Depends(require_admin_access),
+    _authorized: AdminPrincipal = Depends(require_read_access),
 ):
     db = get_db()
     alerts = db.list_alerts(token_id=token_id, limit=limit)
@@ -40,7 +40,7 @@ def list_alerts(
     response_model=AlertRecord,
     summary="Get complete forensic breadcrumb details for an alert",
 )
-def get_alert(alert_id: str, _authorized: bool = Depends(require_admin_access)):
+def get_alert(alert_id: str, _authorized: AdminPrincipal = Depends(require_read_access)):
     db = get_db()
     alert = db.get_alert(alert_id)
     if not alert:
@@ -54,6 +54,7 @@ def get_alert(alert_id: str, _authorized: bool = Depends(require_admin_access)):
 )
 async def simulate_attack(
     sim: SimulationRequest,
+    request: Request,
     _authorized: bool = Depends(require_admin_access),
 ):
     """
@@ -108,6 +109,13 @@ async def simulate_attack(
         decoy_response_body='{"error": "AccessDenied", "message": "CanaryMesh simulated intrusion"}',
         severity=severity,
         notified=True,
+    )
+    db.record_admin_action(
+        _authorized.role,
+        _authorized.key_id,
+        "alert.simulate",
+        alert_id,
+        request.client.host if request.client else "unknown",
     )
 
     alert_record["tool_detected"] = ua_info["tool_detected"]
