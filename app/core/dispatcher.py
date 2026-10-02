@@ -3,10 +3,15 @@
 import asyncio
 import logging
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 import httpx
 from app.config import get_settings
 
 logger = logging.getLogger("canarymesh.dispatcher")
+
+
+def _webhook_host(target_url: str) -> str:
+    return urlsplit(target_url).hostname or "configured webhook"
 
 
 def build_slack_blocks(alert: Dict[str, Any]) -> Dict[str, Any]:
@@ -119,12 +124,20 @@ async def dispatch_alert(alert_data: Dict[str, Any], custom_webhook_url: Optiona
         async with httpx.AsyncClient(timeout=4.0) as client:
             resp = await client.post(target_url, json=payload)
             if resp.status_code in [200, 204]:
-                logger.info("Successfully delivered alert to webhook: %s", target_url)
+                logger.info("Successfully delivered alert to webhook host %s", _webhook_host(target_url))
                 return True
             else:
-                logger.warning("Webhook returned non-200 code %d: %s", resp.status_code, resp.text)
+                logger.warning(
+                    "Webhook host %s returned non-success status %d",
+                    _webhook_host(target_url),
+                    resp.status_code,
+                )
                 return False
 
     except Exception as exc:
-        logger.error("Failed to deliver alert to webhook %s: %s", target_url, exc)
+        logger.error(
+            "Failed to deliver alert to webhook host %s (%s)",
+            _webhook_host(target_url),
+            type(exc).__name__,
+        )
         return False

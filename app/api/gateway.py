@@ -7,15 +7,18 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Request, Response
 from app.config import get_settings
 from app.core.decoys import get_decoy_response
-from app.core.dispatcher import dispatch_alert
 from app.core.forensics import (
     analyze_user_agent,
     calculate_threat_severity,
     extract_client_ip,
+    redact_sensitive_data,
     resolve_ip_geo,
+    sanitize_request_headers,
+    sanitize_request_payload,
 )
 from app.core.generators import compute_token_hash
 from app.database import get_db
+from app.services.alert_engine import broadcast_alert
 
 router = APIRouter(tags=["Decoy Trap Gateway"])
 
@@ -91,8 +94,9 @@ async def _handle_trap_hit(
     except Exception:
         raw_payload = None
 
-    headers_dict = dict(request.headers)
-    query_dict = dict(request.query_params)
+    headers_dict = sanitize_request_headers(dict(request.headers))
+    query_dict = redact_sensitive_data(dict(request.query_params))
+    raw_payload = sanitize_request_payload(raw_payload)
 
     # Calculate threat severity
     severity = calculate_threat_severity(
@@ -124,14 +128,14 @@ async def _handle_trap_hit(
             decoy_response_code=status_code,
             decoy_response_body=decoy_body,
             severity=severity,
-            notified=True,
+            notified=False,
         )
         alert_record["tool_detected"] = ua_info["tool_detected"]
+        await broadcast_alert(alert_record)
 
-        # 4. Dispatch Alert in Background
-        background_tasks.add_task(
-            dispatch_alert, alert_record, token.get("webhook_url")
-        )
+        # 4. Persist webhook delivery and let the retry worker dispatch it.
+        if token.get("webhook_url") or settings.default_webhook_url:
+            db.create_notification(alert_record["id"])
 
     # 5. Return realistic decoy response
     return Response(

@@ -13,8 +13,12 @@ services:
       - CANARY_SECRET_KEY=change-this-production-secret-key-in-deployment
       - CANARY_DATABASE_PATH=/app/data/canarymesh.db
       - CANARY_DEFAULT_WEBHOOK_URL=
+      - CANARY_ADMIN_API_KEY=${CANARY_ADMIN_API_KEY:-}
+      - CANARY_AWS_WEBHOOK_SECRET=${CANARY_AWS_WEBHOOK_SECRET:-}
+      - CANARY_AWS_ACCOUNT_ID=${CANARY_AWS_ACCOUNT_ID:-}
+      - CANARY_AWS_PRINCIPAL_ARN=${CANARY_AWS_PRINCIPAL_ARN:-}
       - CANARY_GEOIP_ENABLED=true
-      - CANARY_TRUST_PROXY_HEADERS=true
+      - CANARY_TRUST_PROXY_HEADERS=false
     volumes:
       - canary_data:/app/data
     restart: unless-stopped

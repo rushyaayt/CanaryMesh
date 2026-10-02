@@ -33,13 +33,22 @@ class Settings(BaseModel):
     aws_webhook_secret: Optional[str] = Field(
         default_factory=lambda: os.getenv("CANARY_AWS_WEBHOOK_SECRET", None)
     )
+    admin_api_key: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_ADMIN_API_KEY", None)
+    )
+    aws_account_id: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_AWS_ACCOUNT_ID", None)
+    )
+    aws_honeytoken_principal_arn: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_AWS_PRINCIPAL_ARN", None)
+    )
 
     # Forensics & Network Telemetry
     geoip_enabled: bool = Field(
         default_factory=lambda: os.getenv("CANARY_GEOIP_ENABLED", "true").lower() == "true"
     )
     trust_proxy_headers: bool = Field(
-        default_factory=lambda: os.getenv("CANARY_TRUST_PROXY_HEADERS", "true").lower() == "true"
+        default_factory=lambda: os.getenv("CANARY_TRUST_PROXY_HEADERS", "false").lower() == "true"
     )
 
     # Delay added to decoy responses to simulate authentic server processing (ms)

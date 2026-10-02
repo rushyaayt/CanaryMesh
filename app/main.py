@@ -1,5 +1,6 @@
 """CanaryMesh - Honeytoken-as-a-Service Application Entrypoint"""
 
+import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -11,6 +12,7 @@ from app.api import alerts, gateway, seed, tokens
 from app.config import get_settings
 from app.database import get_db
 from app.routers import breaches, traps, webhooks, ws
+from app.services.alert_engine import notification_worker
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -20,6 +22,7 @@ async def lifespan(app: FastAPI):
     # Startup: Ensure database schema is primed
     db = get_db()
     settings = get_settings()
+    notification_task = asyncio.create_task(notification_worker())
 
     print("\n" + "=" * 65)
     print(r"""
@@ -36,7 +39,14 @@ async def lifespan(app: FastAPI):
     print("   [+] Decoy Trap Gateway: Ready")
     print("   [+] CI/CD Seeder: Ready")
     print("=" * 65 + "\n")
-    yield
+    try:
+        yield
+    finally:
+        notification_task.cancel()
+        try:
+            await notification_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

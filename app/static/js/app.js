@@ -5,18 +5,63 @@
 let currentSelectedType = "ci_ephemeral";
 let cachedTokens = [];
 let cachedAlerts = [];
+let alertSocket = null;
+let alertSocketReconnectTimer = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   loadStats();
   loadTokens();
   loadAlerts();
+  connectLiveAlerts();
 
-  // Poll for live alerts & stats every 5 seconds
+  // Refresh metrics and recover updates if the live connection is unavailable.
   setInterval(() => {
     loadStats();
     loadAlerts(true);
   }, 5000);
 });
+
+function adminFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const key = sessionStorage.getItem("canaryAdminApiKey");
+  if (key) headers.set("Authorization", `Bearer ${key}`);
+  return fetch(url, { ...options, headers });
+}
+
+function configureAdminKey() {
+  const existing = sessionStorage.getItem("canaryAdminApiKey") || "";
+  const entered = prompt("Enter the CanaryMesh admin API key. Leave blank to clear it.", existing);
+  if (entered === null) return;
+  if (entered.trim()) sessionStorage.setItem("canaryAdminApiKey", entered.trim());
+  else sessionStorage.removeItem("canaryAdminApiKey");
+  loadAlerts();
+  connectLiveAlerts();
+}
+
+function connectLiveAlerts() {
+  const key = sessionStorage.getItem("canaryAdminApiKey");
+  if (alertSocketReconnectTimer) clearTimeout(alertSocketReconnectTimer);
+  alertSocketReconnectTimer = null;
+  if (alertSocket) alertSocket.close();
+  alertSocket = null;
+  if (!key) return;
+
+  const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(
+    `${scheme}//${window.location.host}/api/v1/ws/alerts`,
+    ["canarymesh", `canarymesh-auth.${key}`],
+  );
+  alertSocket = socket;
+  socket.onmessage = () => {
+    loadAlerts(true);
+    loadStats();
+  };
+  socket.onclose = () => {
+    if (alertSocket === socket && sessionStorage.getItem("canaryAdminApiKey")) {
+      alertSocketReconnectTimer = setTimeout(connectLiveAlerts, 5000);
+    }
+  };
+}
 
 // --- Tab Switching ---
 function switchTab(tabName) {
@@ -120,8 +165,13 @@ async function loadTokens() {
 async function loadAlerts(silent = false) {
   const tbody = document.getElementById("alerts-table-body");
   try {
-    const res = await fetch("/api/v1/alerts?limit=50");
-    if (!res.ok) throw new Error("Failed to fetch alerts");
+    const res = await adminFetch("/api/v1/events?limit=50");
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 503) {
+        throw new Error("Configure CANARY_ADMIN_API_KEY, then enter it with the Admin Key button.");
+      }
+      throw new Error(`Failed to fetch events (HTTP ${res.status})`);
+    }
     const alerts = await res.json();
     cachedAlerts = alerts;
 
@@ -138,19 +188,22 @@ async function loadAlerts(silent = false) {
     }
 
     tbody.innerHTML = alerts.map(a => {
-      const geo = a.geo_location || {};
+      const geo = a.details || {};
       const locStr = `${geo.city || 'Unknown'}, ${geo.country || 'Unknown'}`;
-      const toolStr = a.headers["User-Agent"] || a.user_agent || "Unknown Tool";
+      const toolStr = a.user_agent || "Unknown Tool";
+      const label = a.token_label || a.token_type;
+      const route = `${a.action || "EVENT"} ${a.path || "-"}`;
+      const eventTokenId = a.token_id || a.event_id || a.id;
 
       return `
         <tr>
-          <td><span class="badge badge-tripped">${escapeHtml(a.severity)}</span></td>
+          <td><span class="badge badge-tripped">${escapeHtml(a.severity || "CRITICAL")}</span></td>
           <td>
-            <strong>${escapeHtml(a.token_label)}</strong>
-            <div style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono);">${a.token_id}</div>
+            <strong>${escapeHtml(label)}</strong>
+            <div style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono);">${escapeHtml(eventTokenId)}</div>
           </td>
           <td>
-            <div style="font-family: var(--font-mono); font-weight: 600; color: var(--accent-cyan);">${escapeHtml(a.client_ip)}</div>
+            <div style="font-family: var(--font-mono); font-weight: 600; color: var(--accent-cyan);">${escapeHtml(a.source_ip)}</div>
             <div style="font-size: 0.75rem; color: var(--text-secondary);">${escapeHtml(locStr)}</div>
           </td>
           <td>
@@ -159,9 +212,9 @@ async function loadAlerts(silent = false) {
             </div>
           </td>
           <td>
-            <span style="font-family: var(--font-mono); font-size: 0.8rem;">${escapeHtml(a.http_method)} ${escapeHtml(a.request_path)}</span>
+            <span style="font-family: var(--font-mono); font-size: 0.8rem;">${escapeHtml(route)}</span>
           </td>
-          <td><span class="mono-token">${a.decoy_response_code}</span></td>
+          <td><span class="mono-token">${a.decoy_response_code || "-"}</span></td>
           <td style="font-size: 0.78rem; color: var(--text-secondary); font-family: var(--font-mono);">${formatDateTime(a.timestamp)}</td>
           <td>
             <button class="btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" onclick="openForensicsModal('${a.id}')">Inspect</button>
@@ -267,24 +320,25 @@ function openForensicsModal(alertId) {
   const alert = cachedAlerts.find(a => a.id === alertId);
   if (!alert) return;
 
-  const geo = alert.geo_location || {};
-  const headersFormatted = JSON.stringify(alert.headers, null, 2);
-  const payloadFormatted = alert.payload || "(No request body captured)";
+  const geo = alert.details || {};
+  const eventDetails = JSON.stringify(alert.details || {}, null, 2);
+  const label = alert.token_label || alert.token_type;
+  const route = `${alert.action || "EVENT"} ${alert.path || "-"}`;
 
   const body = document.getElementById("forensics-modal-body");
   body.innerHTML = `
     <div class="forensic-grid">
       <div class="forensic-item">
         <div class="forensic-item-label">Honeytoken Label</div>
-        <div class="forensic-item-val" style="color: var(--accent-cyan); font-weight:700;">${escapeHtml(alert.token_label)}</div>
+        <div class="forensic-item-val" style="color: var(--accent-cyan); font-weight:700;">${escapeHtml(label)}</div>
       </div>
       <div class="forensic-item">
         <div class="forensic-item-label">Severity Level</div>
-        <div class="forensic-item-val"><span class="badge badge-tripped">${alert.severity}</span></div>
+        <div class="forensic-item-val"><span class="badge badge-tripped">${escapeHtml(alert.severity || "CRITICAL")}</span></div>
       </div>
       <div class="forensic-item">
         <div class="forensic-item-label">Adversary Source IP</div>
-        <div class="forensic-item-val">${escapeHtml(alert.client_ip)}</div>
+        <div class="forensic-item-val">${escapeHtml(alert.source_ip)}</div>
       </div>
       <div class="forensic-item">
         <div class="forensic-item-label">Geographic Origin</div>
@@ -292,27 +346,17 @@ function openForensicsModal(alertId) {
       </div>
       <div class="forensic-item">
         <div class="forensic-item-label">HTTP Route & Method</div>
-        <div class="forensic-item-val">${escapeHtml(alert.http_method)} ${escapeHtml(alert.request_path)}</div>
+        <div class="forensic-item-val">${escapeHtml(route)}</div>
       </div>
       <div class="forensic-item">
         <div class="forensic-item-label">Decoy Response Code</div>
-        <div class="forensic-item-val">${alert.decoy_response_code} (Deception Response Sent)</div>
+        <div class="forensic-item-val">${alert.decoy_response_code || "N/A"}</div>
       </div>
     </div>
 
     <div class="form-group" style="margin-top: 1rem;">
-      <label class="form-label">Captured Request Headers</label>
-      <div class="code-block"><pre>${escapeHtml(headersFormatted)}</pre></div>
-    </div>
-
-    <div class="form-group">
-      <label class="form-label">Captured Request Body / Payload</label>
-      <div class="code-block"><pre>${escapeHtml(payloadFormatted)}</pre></div>
-    </div>
-
-    <div class="form-group">
-      <label class="form-label">Decoy Server Response Delivered to Adversary</label>
-      <div class="code-block"><pre>${escapeHtml(alert.decoy_response_body || 'N/A')}</pre></div>
+      <label class="form-label">Event Details</label>
+      <div class="code-block"><pre>${escapeHtml(eventDetails)}</pre></div>
     </div>
   `;
 
@@ -400,7 +444,7 @@ async function runAttackSimulation() {
   btn.innerText = "Simulating Intrusion...";
 
   try {
-    const res = await fetch("/api/v1/alerts/simulate", {
+    const res = await adminFetch("/api/v1/alerts/simulate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -436,7 +480,7 @@ async function runAttackSimulation() {
 
 async function testToken(tokenId) {
   try {
-    const res = await fetch("/api/v1/alerts/simulate", {
+    const res = await adminFetch("/api/v1/alerts/simulate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token_id: tokenId }),

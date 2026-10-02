@@ -14,6 +14,11 @@ def get_base_url() -> str:
     return os.getenv("CANARY_URL", "http://localhost:8000").rstrip("/")
 
 
+def get_admin_headers() -> dict[str, str]:
+    api_key = os.getenv("CANARY_ADMIN_API_KEY")
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
 def cmd_generate(args):
     """Generates a new honeytoken."""
     url = f"{get_base_url()}/api/v1/tokens"
@@ -101,7 +106,7 @@ def cmd_alerts(args):
     """Shows recorded intrusion alerts."""
     url = f"{get_base_url()}/api/v1/alerts?limit={args.limit}"
     try:
-        resp = httpx.get(url, timeout=5.0)
+        resp = httpx.get(url, headers=get_admin_headers(), timeout=5.0)
         if resp.status_code == 200:
             alerts = resp.json()
             if not alerts:
@@ -130,7 +135,7 @@ def cmd_simulate(args):
     }
 
     try:
-        resp = httpx.post(url, json=payload, timeout=5.0)
+        resp = httpx.post(url, json=payload, headers=get_admin_headers(), timeout=5.0)
         if resp.status_code == 200:
             data = resp.json()
             print("\n[!] [SIMULATION SUCCESSFUL] Alert triggered and dispatched!")

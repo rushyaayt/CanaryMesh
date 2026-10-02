@@ -257,12 +257,16 @@ Instant Slack/Discord webhook with the attacker's IP, country, ISP, user-agent, 
 | `DELETE`| `/api/v1/tokens/{id}` | Revoke an active honeytoken. |
 | `POST` | `/api/v1/seed/ci` | Dynamic 1-line ephemeral token provisioning for CI/CD runs. |
 | `GET` | `/api/v1/seed/quick-script.sh` | Downloadable bash injector for CI/CD runners. |
-| `GET` | `/api/v1/alerts` | List forensic breach incident logs. |
-| `GET` | `/api/v1/alerts/{id}` | Full forensic breakdown (raw headers, payload, GeoIP, client tool). |
-| `GET` | `/api/v1/breaches` | List persisted environment-file and cloud webhook breach events. |
-| `POST` | `/api/v1/alerts/simulate` | Fire a live breach simulation for testing and verification. |
+| `GET` | `/api/v1/alerts` | List forensic breach incident logs (admin key required). |
+| `GET` | `/api/v1/alerts/{id}` | Full forensic breakdown (admin key required). |
+| `GET` | `/api/v1/breaches` | List persisted environment-file and cloud webhook events (admin key required). |
+| `GET` | `/api/v1/events` | Filter unified incident history by time, token, source, IP, and severity (admin key required). |
+| `GET` | `/api/v1/events/export` | Export filtered incident events as CSV (admin key required). |
+| `GET` | `/api/v1/notifications` | Inspect webhook delivery attempts (admin key required). |
+| `POST` | `/api/v1/notifications/{id}/retry` | Retry a failed webhook delivery (admin key required). |
+| `POST` | `/api/v1/alerts/simulate` | Fire a live breach simulation for testing (admin key required). |
 | `POST` | `/api/v1/webhooks/aws` | Authenticated AWS CloudTrail/EventBridge webhook receiver. |
-| `WS` | `/api/v1/ws/alerts` | Stream standalone breach events to connected dashboards. |
+| `WS` | `/api/v1/ws/alerts` | Stream token-trigger and standalone breach events to connected dashboards. |
 | `ALL` | `/trap/{token_id}` | Universal decoy trap endpoint. |
 | `GET` | `/.env`, `/config.json` | Fake configuration-file traps; access is persisted as a breach event. |
 | `POST` | `/v1/chat/completions` | Decoy OpenAI API gateway. |
@@ -271,14 +275,55 @@ Instant Slack/Discord webhook with the attacker's IP, country, ISP, user-agent, 
 | `GET` | `/api/v1/stats` | High-level deception telemetry metrics. |
 | `GET` | `/health` | Service health status. |
 
-Standalone trap and AWS webhook breaches are stored in the SQLite `breach_logs`
-table and broadcast to WebSocket clients at `/api/v1/ws/alerts`. The existing
-`/v1/chat/completions` endpoint already records OpenAI-key probes through the
-decoy gateway. To accept AWS EventBridge events, set `CANARY_AWS_WEBHOOK_SECRET`
-and configure the EventBridge API destination to send it in the
-`x-canary-webhook-secret` header. Leave the secret unset to keep the receiver
-disabled. `CANARY_DEFAULT_WEBHOOK_URL` also receives standalone breach alerts
-through the existing Slack, Discord, or generic webhook integration.
+Set a high-entropy, URL-safe (for example, 64 hexadecimal characters)
+`CANARY_ADMIN_API_KEY` to enable incident history, event
+search/export, notification management, and the WebSocket feed. HTTP endpoints
+require `Authorization: Bearer <key>`; set the same value in
+`CANARY_ADMIN_API_KEY` when using the CLI `alerts` or `simulate` commands. For browser WebSockets, offer the
+subprotocols `canarymesh` and `canarymesh-auth.<key>`; use TLS and configure
+proxies not to log WebSocket subprotocol values. These sensitive endpoints
+return `503` until the key is configured.
+
+Standalone trap and AWS webhook events are stored in SQLite and broadcast to
+authorized WebSocket clients. `/api/v1/events` provides a unified view of
+token-trigger alerts and standalone trap/cloud events. Webhook deliveries are
+persisted, retried up to three times, recovered after a process restart, and
+can be inspected or manually retried. Delivery is at-least-once; use the event
+ID in notifications to deduplicate in downstream systems. The global webhook URL remains in runtime
+configuration rather than notification records; existing per-token webhook
+destinations remain part of the token registry. On startup, a one-time database
+migration redacts common credential fields from existing captured headers,
+query parameters, and JSON request bodies. New non-JSON request bodies are
+stored only as redacted length metadata.
+
+To accept AWS EventBridge events, set `CANARY_AWS_WEBHOOK_SECRET`,
+`CANARY_AWS_ACCOUNT_ID`, and the exact `CANARY_AWS_PRINCIPAL_ARN`. Configure
+the EventBridge API destination to send the secret in the
+`x-canary-webhook-secret` header and forward the standard EventBridge envelope.
+The receiver checks the account, principal ARN, event timestamp (24-hour
+maximum age), and event ID; duplicate event IDs are ignored. Leave any required
+AWS setting unset to keep the receiver disabled. `CANARY_DEFAULT_WEBHOOK_URL`
+receives standalone breach alerts through Slack, Discord, or a generic webhook.
+The decoy configuration response uses an `.invalid` host and an explicitly
+non-credential password to avoid resembling usable secrets.
+
+For the AWS canary, create a dedicated IAM user with no attached permissions
+and create an access key for that user. Plant that AWS-issued access key as the
+canary secret; a synthetic key that does not correspond to an AWS principal
+cannot produce a CloudTrail event identifying the configured ARN. Do not grant
+the user permissions. Enable CloudTrail management events, then create an
+EventBridge rule matching the target account, `AWS API Call via CloudTrail`
+detail type, and `detail.userIdentity.arn` for that dedicated user. Send the
+standard EventBridge envelope to this service's HTTPS endpoint through an API
+Destination using the configured secret as the `x-canary-webhook-secret` API
+key header. Rotate or revoke the canary access key as part of retirement.
+
+The application uses SQLite WAL mode. Back up the configured database file
+with a SQLite-consistent backup (for example, SQLite's backup API); do not copy
+only the live database file while ignoring its WAL journal.
+Proxy-supplied client IP headers are ignored by default. Set
+`CANARY_TRUST_PROXY_HEADERS=true` only when the service is behind a trusted
+proxy configured to remove caller-supplied forwarding headers and set its own.
 
 ---
 
@@ -310,6 +355,3 @@ pytest -v tests/
 ## 📄 License
 
 CanaryMesh is open-source software licensed under the [Apache License, Version 2.0](LICENSE).
-
-
-

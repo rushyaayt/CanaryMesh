@@ -2,12 +2,20 @@
 
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.core.dispatcher import dispatch_alert
-from app.core.forensics import analyze_user_agent, calculate_threat_severity, resolve_ip_geo
+from app.core.forensics import (
+    analyze_user_agent,
+    calculate_threat_severity,
+    resolve_ip_geo,
+    sanitize_request_headers,
+    sanitize_request_payload,
+)
 from app.core.generators import compute_token_hash
 from app.database import get_db
 from app.models import AlertRecord, SimulationRequest
+from app.services.alert_engine import broadcast_alert
+from app.services.auth import require_admin_access
 
 router = APIRouter(prefix="/api/v1", tags=["Alerts & Forensics"])
 
@@ -20,6 +28,7 @@ router = APIRouter(prefix="/api/v1", tags=["Alerts & Forensics"])
 def list_alerts(
     token_id: Optional[str] = Query(None, description="Filter alerts by specific honeytoken ID"),
     limit: int = Query(50, ge=1, le=200),
+    _authorized: bool = Depends(require_admin_access),
 ):
     db = get_db()
     alerts = db.list_alerts(token_id=token_id, limit=limit)
@@ -31,7 +40,7 @@ def list_alerts(
     response_model=AlertRecord,
     summary="Get complete forensic breadcrumb details for an alert",
 )
-def get_alert(alert_id: str):
+def get_alert(alert_id: str, _authorized: bool = Depends(require_admin_access)):
     db = get_db()
     alert = db.get_alert(alert_id)
     if not alert:
@@ -43,7 +52,10 @@ def get_alert(alert_id: str):
     "/alerts/simulate",
     summary="Simulate an adversary accessing a honeytoken (for testing & verification)",
 )
-async def simulate_attack(sim: SimulationRequest):
+async def simulate_attack(
+    sim: SimulationRequest,
+    _authorized: bool = Depends(require_admin_access),
+):
     """
     Triggers a live breach simulation against an active honeytoken.
     Verifies the alert pipeline, forensic collector, and webhook notifications.
@@ -88,8 +100,8 @@ async def simulate_attack(sim: SimulationRequest):
         user_agent=sim.simulated_tool or "curl/8.4.0",
         http_method="POST",
         request_path=f"/trap/{target_token['id']}",
-        headers=simulated_headers,
-        payload=sim.payload,
+        headers=sanitize_request_headers(simulated_headers),
+        payload=sanitize_request_payload(sim.payload),
         query_params={"action": "simulate_test"},
         geo_location=geo_info,
         decoy_response_code=403,
@@ -99,6 +111,7 @@ async def simulate_attack(sim: SimulationRequest):
     )
 
     alert_record["tool_detected"] = ua_info["tool_detected"]
+    await broadcast_alert(alert_record)
 
     # Dispatch to configured webhook
     delivered = await dispatch_alert(alert_record, target_token.get("webhook_url"))

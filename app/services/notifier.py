@@ -14,6 +14,7 @@ async def send_discord_alert(webhook_url: str, breach_info: dict[str, Any]) -> b
         "color": 15158332,
         "fields": [
             {"name": "Token Type", "value": str(breach_info["token_type"]), "inline": True},
+            {"name": "Event ID", "value": str(breach_info["id"]), "inline": True},
             {"name": "Attacker IP", "value": str(breach_info["source_ip"]), "inline": True},
             {"name": "User Agent", "value": str(breach_info.get("user_agent") or "N/A")},
         ],
@@ -24,6 +25,7 @@ async def send_discord_alert(webhook_url: str, breach_info: dict[str, Any]) -> b
 async def send_slack_alert(webhook_url: str, breach_info: dict[str, Any]) -> bool:
     message = (
         "*CanaryMesh intrusion detected*\n"
+        f"*Event ID:* `{breach_info['id']}`\n"
         f"*Token Type:* `{breach_info['token_type']}`\n"
         f"*Attacker IP:* `{breach_info['source_ip']}`\n"
         f"*User Agent:* `{breach_info.get('user_agent') or 'N/A'}`"
@@ -49,6 +51,6 @@ async def _post_notification(webhook_url: str, payload: dict[str, Any]) -> bool:
         if response.is_success:
             return True
         logger.warning("Breach notification webhook returned HTTP %d", response.status_code)
-    except httpx.HTTPError:
-        logger.exception("Failed to deliver breach notification")
+    except httpx.HTTPError as exc:
+        logger.error("Failed to deliver breach notification (%s)", type(exc).__name__)
     return False
