@@ -111,7 +111,11 @@ cd canarymesh
 
 # 2. Initialize virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# Windows (PowerShell)
+.\.venv\Scripts\Activate.ps1
+
+# Linux / macOS
+source .venv/bin/activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
