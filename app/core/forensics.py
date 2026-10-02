@@ -1,6 +1,7 @@
 """CanaryMesh Forensic Telemetry & Adversary Fingerprinting Engine"""
 
 import ipaddress
+import json
 import re
 from typing import Any, Dict, Optional, Tuple
 import httpx
@@ -23,6 +24,50 @@ KNOWN_OFFENSIVE_TOOLS = [
     (r"masscan|zgrab|nmap", "Port / Service Reconnaissance Scanner"),
     (r"burp", "Burp Suite Security Proxy"),
 ]
+
+SENSITIVE_FIELD_PATTERN = re.compile(
+    r"authorization|cookie|token|secret|password|api[_-]?key|access[_-]?key|credential",
+    re.IGNORECASE,
+)
+
+
+def redact_sensitive_data(value: Any) -> Any:
+    """Recursively remove common credential fields before persisting telemetry."""
+    if isinstance(value, dict):
+        return {
+            key: (
+                "[REDACTED]"
+                if SENSITIVE_FIELD_PATTERN.search(str(key))
+                else redact_sensitive_data(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_data(item) for item in value]
+    return value
+
+
+def sanitize_request_headers(headers: Dict[str, Any]) -> Dict[str, Any]:
+    safe_headers = {"accept", "content-type", "user-agent", "x-request-id"}
+    return {
+        key: (
+            "[REDACTED]"
+            if SENSITIVE_FIELD_PATTERN.search(key)
+            else value
+        )
+        for key, value in headers.items()
+        if key.lower() in safe_headers or SENSITIVE_FIELD_PATTERN.search(key)
+    }
+
+
+def sanitize_request_payload(payload: Optional[str]) -> Optional[str]:
+    if not payload:
+        return payload
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return f"[REDACTED non-JSON body: {len(payload.encode('utf-8'))} bytes]"
+    return json.dumps(redact_sensitive_data(decoded), ensure_ascii=False)
 
 
 def extract_client_ip(request: Request) -> str:

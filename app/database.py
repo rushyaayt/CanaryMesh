@@ -1,6 +1,7 @@
 """CanaryMesh Database & Persistence Layer using SQLite with WAL Mode"""
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -72,7 +73,622 @@ class Database:
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_token ON alerts(token_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_time ON alerts(timestamp);")
+
+            # Standalone decoy and cloud-provider events need no registered token.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS breach_logs (
+                    id TEXT PRIMARY KEY,
+                    token_type TEXT NOT NULL,
+                    source_ip TEXT NOT NULL,
+                    user_agent TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    path TEXT,
+                    action TEXT,
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    event_id TEXT,
+                    source TEXT NOT NULL DEFAULT 'decoy',
+                    account_id TEXT,
+                    principal_arn TEXT,
+                    severity TEXT NOT NULL DEFAULT 'CRITICAL'
+                );
+            """)
+            existing_breach_columns = {
+                row["name"] for row in cursor.execute("PRAGMA table_info(breach_logs)")
+            }
+            for name, definition in (
+                ("event_id", "TEXT"),
+                ("source", "TEXT NOT NULL DEFAULT 'decoy'"),
+                ("account_id", "TEXT"),
+                ("principal_arn", "TEXT"),
+                ("severity", "TEXT NOT NULL DEFAULT 'CRITICAL'"),
+            ):
+                if name not in existing_breach_columns:
+                    cursor.execute(f"ALTER TABLE breach_logs ADD COLUMN {name} {definition}")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_breach_logs_time ON breach_logs(timestamp);")
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_breach_logs_event_id "
+                "ON breach_logs(event_id) WHERE event_id IS NOT NULL;"
+            )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS notification_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_error TEXT,
+                    next_attempt_at TEXT NOT NULL DEFAULT '',
+                    lease_owner TEXT,
+                    lease_until TEXT
+                );
+            """)
+            existing_notification_columns = {
+                row["name"] for row in cursor.execute("PRAGMA table_info(notification_deliveries)")
+            }
+            for name, definition in (
+                ("next_attempt_at", "TEXT NOT NULL DEFAULT ''"),
+                ("lease_owner", "TEXT"),
+                ("lease_until", "TEXT"),
+            ):
+                if name not in existing_notification_columns:
+                    cursor.execute(
+                        f"ALTER TABLE notification_deliveries ADD COLUMN {name} {definition}"
+                    )
+            cursor.execute(
+                "UPDATE notification_deliveries SET next_attempt_at = created_at "
+                "WHERE next_attempt_at = ''"
+            )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS admin_audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    actor_role TEXT NOT NULL,
+                    actor_key_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    target_id TEXT,
+                    source_ip TEXT NOT NULL
+                );
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_admin_audit_time ON admin_audit_log(timestamp);"
+            )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS webhook_replays (
+                    signature TEXT PRIMARY KEY,
+                    expires_at TEXT NOT NULL
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS webhook_rate_limits (
+                    bucket_key TEXT PRIMARY KEY,
+                    window_start INTEGER NOT NULL,
+                    request_count INTEGER NOT NULL
+                );
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_webhook_rate_window "
+                "ON webhook_rate_limits(window_start);"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notifications_status "
+                "ON notification_deliveries(status, created_at);"
+            )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );
+            """)
+            if not cursor.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = 1"
+            ).fetchone():
+                self._redact_legacy_alert_data(cursor)
+                cursor.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (1, datetime.now(timezone.utc).isoformat()),
+                )
             conn.commit()
+
+    def integrity_check(self) -> str:
+        conn = self._get_connection()
+        try:
+            result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            conn.close()
+        if result != "ok":
+            raise sqlite3.DatabaseError(f"SQLite integrity check failed: {result}")
+        return result
+
+    def backup_to(self, destination: str) -> str:
+        source_path = os.path.abspath(self.db_path)
+        target_path = os.path.abspath(destination)
+        if source_path == target_path:
+            raise ValueError("Backup destination must differ from the active database")
+        source = self._get_connection()
+        target = None
+        try:
+            target = sqlite3.connect(target_path)
+            source.backup(target)
+            result = target.execute("PRAGMA integrity_check").fetchone()[0]
+            if result != "ok":
+                raise sqlite3.DatabaseError(f"SQLite backup integrity check failed: {result}")
+            return result
+        finally:
+            if target:
+                target.close()
+            source.close()
+
+    @staticmethod
+    def _redact_legacy_alert_data(cursor: sqlite3.Cursor) -> None:
+        from app.core.forensics import redact_sensitive_data, sanitize_request_payload
+
+        rows = cursor.execute(
+            "SELECT id, request_headers_json, request_payload, query_params_json FROM alerts"
+        ).fetchall()
+        for row in rows:
+            try:
+                headers = json.loads(row["request_headers_json"] or "{}")
+            except json.JSONDecodeError:
+                headers = {}
+            try:
+                query_params = json.loads(row["query_params_json"] or "{}")
+            except json.JSONDecodeError:
+                query_params = {}
+            cursor.execute(
+                """
+                UPDATE alerts
+                SET request_headers_json = ?, request_payload = ?, query_params_json = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(redact_sensitive_data(headers)),
+                    sanitize_request_payload(row["request_payload"]),
+                    json.dumps(redact_sensitive_data(query_params)),
+                    row["id"],
+                ),
+            )
+
+    def record_breach(
+        self,
+        breach_id: str,
+        token_type: str,
+        source_ip: str,
+        user_agent: str,
+        path: Optional[str] = None,
+        action: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        event_id: Optional[str] = None,
+        source: str = "decoy",
+        account_id: Optional[str] = None,
+        principal_arn: Optional[str] = None,
+        severity: str = "CRITICAL",
+        enqueue_notification: bool = False,
+    ) -> Dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            if event_id:
+                existing = conn.execute(
+                    "SELECT * FROM breach_logs WHERE event_id = ?", (event_id,)
+                ).fetchone()
+                if existing:
+                    breach = self._row_to_breach_dict(existing)
+                    breach["_duplicate"] = True
+                    return breach
+            try:
+                conn.execute(
+                    """
+                INSERT INTO breach_logs (
+                    id, token_type, source_ip, user_agent, timestamp, path, action, details_json,
+                    event_id, source, account_id, principal_arn, severity
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                    (
+                        breach_id, token_type, source_ip, user_agent, now_iso, path, action,
+                        json.dumps(details or {}), event_id, source, account_id, principal_arn,
+                        severity,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                if not event_id:
+                    raise
+                existing = conn.execute(
+                    "SELECT * FROM breach_logs WHERE event_id = ?", (event_id,)
+                ).fetchone()
+                if existing is None:
+                    raise
+                breach = self._row_to_breach_dict(existing)
+                breach["_duplicate"] = True
+                return breach
+            if enqueue_notification:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO notification_deliveries
+                        (event_id, status, attempts, created_at, updated_at, next_attempt_at)
+                    VALUES (?, 'pending', 0, ?, ?, ?)
+                    """,
+                    (breach_id, now_iso, now_iso, now_iso),
+                )
+            conn.commit()
+        return self.get_breach(breach_id)  # type: ignore
+
+    def get_breach(self, breach_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT * FROM breach_logs WHERE id = ?", (breach_id,)).fetchone()
+            if row is None:
+                return None
+            return self._row_to_breach_dict(row)
+
+    @staticmethod
+    def _row_to_breach_dict(row: sqlite3.Row) -> Dict[str, Any]:
+        breach = dict(row)
+        breach["details"] = json.loads(breach.pop("details_json") or "{}")
+        return breach
+
+    def list_breaches(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM breach_logs ORDER BY timestamp DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [self._row_to_breach_dict(row) for row in rows]
+
+    def list_events(
+        self,
+        limit: int = 100,
+        token_id: Optional[str] = None,
+        token_type: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        severity: Optional[str] = None,
+        source: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        predicates = []
+        params: List[Any] = []
+        for field, value in (
+            ("token_id", token_id),
+            ("token_type", token_type),
+            ("source_ip", source_ip),
+            ("severity", severity),
+            ("source", source),
+        ):
+            if value is not None:
+                predicates.append(f"{field} = ?")
+                params.append(value)
+        if since is not None:
+            predicates.append("timestamp >= ?")
+            params.append(since)
+        if until is not None:
+            predicates.append("timestamp <= ?")
+            params.append(until)
+        where = f"WHERE {' AND '.join(predicates)}" if predicates else ""
+        query = f"""
+            SELECT * FROM (
+                SELECT
+                    id, timestamp, token_type, client_ip AS source_ip, user_agent,
+                    'token' AS source, request_path AS path, http_method AS action,
+                    severity, token_id, token_label, NULL AS event_id, NULL AS account_id,
+                    NULL AS principal_arn, geo_location_json AS details_json
+                FROM alerts
+                UNION ALL
+                SELECT
+                    id, timestamp, token_type, source_ip, user_agent, source, path, action,
+                    severity, NULL AS token_id, NULL AS token_label, event_id, account_id,
+                    principal_arn, details_json
+                FROM breach_logs
+            ) {where}
+            ORDER BY timestamp DESC LIMIT ?
+        """
+        params.append(limit)
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        events = []
+        for row in rows:
+            event = dict(row)
+            try:
+                event["details"] = json.loads(event.pop("details_json") or "{}")
+            except json.JSONDecodeError:
+                event["details"] = {}
+            events.append(event)
+        return events
+
+    def create_notification(self, event_id: str) -> Dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO notification_deliveries
+                    (event_id, status, attempts, created_at, updated_at, next_attempt_at)
+                VALUES (?, 'pending', 0, ?, ?, ?)
+                """,
+                (event_id, now_iso, now_iso, now_iso),
+            )
+            row = conn.execute(
+                "SELECT * FROM notification_deliveries WHERE event_id = ?", (event_id,)
+            ).fetchone()
+        return dict(row)
+
+    def get_notification(self, notification_id: int) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM notification_deliveries WHERE id = ?", (notification_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_notifications(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM notification_deliveries ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def list_pending_notifications(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM notification_deliveries WHERE status = 'pending' "
+                "ORDER BY created_at LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def claim_notification(
+        self,
+        worker_id: str,
+        notification_id: Optional[int] = None,
+        lease_seconds: int = 30,
+    ) -> Optional[Dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        lease_until = datetime.fromtimestamp(
+            now.timestamp() + lease_seconds, timezone.utc
+        ).isoformat()
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                UPDATE notification_deliveries
+                SET status = 'failed',
+                    last_error = COALESCE(last_error, 'Final delivery lease expired'),
+                    lease_owner = NULL,
+                    lease_until = NULL,
+                    updated_at = ?
+                WHERE status = 'processing' AND attempts >= 3 AND lease_until <= ?
+                """,
+                (now_iso, now_iso),
+            )
+            query = """
+                SELECT id FROM notification_deliveries
+                WHERE attempts < 3
+                  AND next_attempt_at <= ?
+                  AND (
+                    status = 'pending'
+                    OR (status = 'processing' AND lease_until <= ?)
+                  )
+            """
+            params: tuple[Any, ...] = (now_iso, now_iso)
+            if notification_id is not None:
+                query += " AND id = ?"
+                params += (notification_id,)
+            query += " ORDER BY next_attempt_at, created_at LIMIT 1"
+            row = conn.execute(query, params).fetchone()
+            if not row:
+                conn.commit()
+                return None
+            conn.execute(
+                """
+                UPDATE notification_deliveries
+                SET status = 'processing', lease_owner = ?, lease_until = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (worker_id, lease_until, now_iso, row["id"]),
+            )
+            claimed = conn.execute(
+                "SELECT * FROM notification_deliveries WHERE id = ?", (row["id"],)
+            ).fetchone()
+            conn.commit()
+            return dict(claimed)
+
+    def update_notification(
+        self,
+        notification_id: int,
+        status: str,
+        attempts: int,
+        last_error: Optional[str] = None,
+        worker_id: Optional[str] = None,
+        next_attempt_at: Optional[str] = None,
+        lease_seconds: int = 30,
+    ) -> None:
+        with self._get_connection() as conn:
+            query = """
+                UPDATE notification_deliveries
+                SET status = ?, attempts = ?, last_error = ?, updated_at = ?,
+                    next_attempt_at = COALESCE(?, next_attempt_at),
+                    lease_owner = NULL, lease_until = NULL
+                WHERE id = ?
+            """
+            now = datetime.now(timezone.utc)
+            params: tuple[Any, ...] = (
+                status,
+                attempts,
+                last_error,
+                now.isoformat(),
+                next_attempt_at,
+                notification_id,
+            )
+            if worker_id is not None:
+                if status == "processing":
+                    query = """
+                        UPDATE notification_deliveries
+                        SET status = ?, attempts = ?, last_error = ?, updated_at = ?,
+                            next_attempt_at = COALESCE(?, next_attempt_at),
+                            lease_owner = ?, lease_until = ?
+                        WHERE id = ? AND status = 'processing' AND lease_owner = ?
+                    """
+                    params = (
+                        status,
+                        attempts,
+                        last_error,
+                        now.isoformat(),
+                        next_attempt_at,
+                        worker_id,
+                        datetime.fromtimestamp(
+                            now.timestamp() + lease_seconds, timezone.utc
+                        ).isoformat(),
+                        notification_id,
+                        worker_id,
+                    )
+                else:
+                    query += " AND status = 'processing' AND lease_owner = ?"
+                    params += (worker_id,)
+            cursor = conn.execute(query, params)
+            if worker_id is not None and cursor.rowcount != 1:
+                raise RuntimeError("Notification lease was lost before updating delivery state")
+            conn.commit()
+
+    def retry_notification(self, notification_id: int) -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE notification_deliveries
+                SET status = 'pending', attempts = 0, last_error = NULL, updated_at = ?,
+                    next_attempt_at = ?, lease_owner = NULL, lease_until = NULL
+                WHERE id = ? AND status = 'failed'
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                    notification_id,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def check_webhook_rate_limit(
+        self, bucket_key: str, limit: int, window_seconds: int
+    ) -> bool:
+        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        window_start = now_epoch - (now_epoch % window_seconds)
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM webhook_rate_limits WHERE window_start < ?",
+                (window_start,),
+            )
+            conn.execute(
+                """
+                INSERT INTO webhook_rate_limits (bucket_key, window_start, request_count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(bucket_key) DO UPDATE SET
+                    window_start = excluded.window_start,
+                    request_count = CASE
+                        WHEN webhook_rate_limits.window_start = excluded.window_start
+                        THEN webhook_rate_limits.request_count + 1
+                        ELSE 1
+                    END
+                """,
+                (bucket_key, window_start),
+            )
+            count = conn.execute(
+                "SELECT request_count FROM webhook_rate_limits WHERE bucket_key = ?",
+                (bucket_key,),
+            ).fetchone()["request_count"]
+            conn.commit()
+        return count <= limit
+
+    def claim_webhook_replay(self, signature: str, expires_at: str) -> bool:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM webhook_replays WHERE expires_at <= ?", (now_iso,))
+            try:
+                conn.execute(
+                    "INSERT INTO webhook_replays (signature, expires_at) VALUES (?, ?)",
+                    (signature, expires_at),
+                )
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
+
+    def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+        breach = self.get_breach(event_id)
+        if breach:
+            return breach
+        return self.get_alert(event_id)
+
+    def get_event_webhook_url(self, event_id: str) -> Optional[str]:
+        alert = self.get_alert(event_id)
+        if not alert:
+            return None
+        token = self.get_token(alert["token_id"])
+        return token.get("webhook_url") if token else None
+
+    def mark_alert_notified(self, alert_id: str, notified: bool) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE alerts SET notified = ? WHERE id = ?",
+                (1 if notified else 0, alert_id),
+            )
+            conn.commit()
+
+    def record_admin_action(
+        self,
+        actor_role: str,
+        actor_key_id: str,
+        action: str,
+        target_id: Optional[str],
+        source_ip: str,
+    ) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO admin_audit_log
+                    (timestamp, actor_role, actor_key_id, action, target_id, source_ip)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    actor_role,
+                    actor_key_id,
+                    action,
+                    target_id,
+                    source_ip,
+                ),
+            )
+            conn.commit()
+
+    def list_admin_actions(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM admin_audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def purge_old_events(self, retention_days: int) -> int:
+        if retention_days <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc).timestamp() - retention_days * 86400
+        cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            old_alert_ids = [
+                row["id"] for row in conn.execute("SELECT id FROM alerts WHERE timestamp < ?", (cutoff_iso,))
+            ]
+            old_breach_ids = [
+                row["id"] for row in conn.execute("SELECT id FROM breach_logs WHERE timestamp < ?", (cutoff_iso,))
+            ]
+            removed = len(old_alert_ids) + len(old_breach_ids)
+            for event_id in old_alert_ids + old_breach_ids:
+                conn.execute("DELETE FROM notification_deliveries WHERE event_id = ?", (event_id,))
+            conn.execute("DELETE FROM alerts WHERE timestamp < ?", (cutoff_iso,))
+            conn.execute("DELETE FROM breach_logs WHERE timestamp < ?", (cutoff_iso,))
+            conn.execute(
+                "DELETE FROM admin_audit_log WHERE timestamp < ?", (cutoff_iso,)
+            )
+            conn.commit()
+            return removed
 
     def save_token(
         self,
@@ -182,6 +798,7 @@ class Database:
         decoy_response_body: Optional[str],
         severity: str = "CRITICAL",
         notified: bool = False,
+        enqueue_notification: bool = False,
     ) -> Dict[str, Any]:
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -218,6 +835,15 @@ class Database:
                     1 if notified else 0,
                 ),
             )
+            if enqueue_notification:
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO notification_deliveries
+                        (event_id, status, attempts, created_at, updated_at, next_attempt_at)
+                    VALUES (?, 'pending', 0, ?, ?, ?)
+                    """,
+                    (alert_id, now_iso, now_iso, now_iso),
+                )
 
             # Update token stats
             cursor.execute(
@@ -267,7 +893,10 @@ class Database:
             cursor.execute("SELECT COUNT(*) FROM tokens WHERE trigger_count > 0")
             tripped_tokens = cursor.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(*) FROM alerts")
+            cursor.execute(
+                "SELECT (SELECT COUNT(*) FROM alerts) + "
+                "(SELECT COUNT(*) FROM breach_logs)"
+            )
             total_alerts = cursor.fetchone()[0]
 
             # Count by token type
@@ -312,6 +941,7 @@ class Database:
         d.pop("request_headers_json", None)
         d.pop("query_params_json", None)
         d.pop("geo_location_json", None)
+        d["payload"] = d.pop("request_payload", None)
         return d
 
 

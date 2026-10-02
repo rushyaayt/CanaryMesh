@@ -7,10 +7,20 @@ from app.main import app
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     # Use a memory/test database instance
     db = get_db()
-    with TestClient(app) as test_client:
+    from app.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(),
+        "admin_api_key",
+        "admin-test-key-0123456789abcdef0123456789",
+    )
+    with TestClient(
+        app,
+        headers={"Authorization": "Bearer admin-test-key-0123456789abcdef0123456789"},
+    ) as test_client:
         yield test_client
 
 
@@ -36,15 +46,23 @@ def test_universal_trap_intercept(client):
     tok_id = tok_data["id"]
     raw_token = tok_data["raw_token"]
 
-    # 2. Probe the trap URL with simulated adversary request
-    trap_resp = client.post(
-        f"/trap/{tok_id}",
-        headers={
-            "User-Agent": "curl/8.4.0",
-            "Authorization": f"Bearer {raw_token}",
-        },
-        json={"exploit_attempt": "env_dump"},
-    )
+    # 2. Probe the trap URL with simulated adversary request and verify the live feed.
+    with client.websocket_connect(
+        "/api/v1/ws/alerts",
+        subprotocols=[
+            "canarymesh",
+            "canarymesh-auth.admin-test-key-0123456789abcdef0123456789",
+        ],
+    ) as websocket:
+        trap_resp = client.post(
+            f"/trap/{tok_id}?api_key=should-not-persist",
+            headers={
+                "User-Agent": "curl/8.4.0",
+                "Authorization": f"Bearer {raw_token}",
+            },
+            json={"exploit_attempt": "env_dump", "password": "should-not-persist"},
+        )
+        live_event = websocket.receive_json()
     # The decoy response should return 403 Forbidden with realistic error message
     assert trap_resp.status_code == 403
     body = trap_resp.json()
@@ -60,6 +78,15 @@ def test_universal_trap_intercept(client):
     assert alert["token_id"] == tok_id
     assert alert["token_label"] == "gateway-test-ci"
     assert "curl" in alert["headers"]["user-agent"].lower()
+    assert alert["headers"]["authorization"] == "[REDACTED]"
+    assert alert["query_params"]["api_key"] == "[REDACTED]"
+    assert "should-not-persist" not in alert["payload"]
+    assert live_event["source"] == "token"
+    assert live_event["token_id"] == tok_id
+
+    events_resp = client.get(f"/api/v1/events?token_id={tok_id}")
+    assert events_resp.status_code == 200
+    assert events_resp.json()[0]["source"] == "token"
 
 
 def test_decoy_openai_completions(client):

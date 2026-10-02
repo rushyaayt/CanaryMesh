@@ -30,13 +30,51 @@ class Settings(BaseModel):
     default_webhook_url: Optional[str] = Field(
         default_factory=lambda: os.getenv("CANARY_DEFAULT_WEBHOOK_URL", None)
     )
+    aws_webhook_secret: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_AWS_WEBHOOK_SECRET", None)
+    )
+    admin_api_key: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_ADMIN_API_KEY", None)
+    )
+    previous_admin_api_key: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_PREVIOUS_ADMIN_API_KEY", None)
+    )
+    readonly_api_key: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_READONLY_API_KEY", None)
+    )
+    aws_account_id: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_AWS_ACCOUNT_ID", None)
+    )
+    aws_honeytoken_principal_arn: Optional[str] = Field(
+        default_factory=lambda: os.getenv("CANARY_AWS_PRINCIPAL_ARN", None)
+    )
+    webhook_allowed_hosts: list[str] = Field(
+        default_factory=lambda: [
+            host.strip().lower()
+            for host in os.getenv("CANARY_WEBHOOK_ALLOWED_HOSTS", "").split(",")
+            if host.strip()
+        ]
+    )
+    redis_url: Optional[str] = Field(default_factory=lambda: os.getenv("CANARY_REDIS_URL") or None)
+    retention_days: int = Field(
+        default_factory=lambda: max(0, int(os.getenv("CANARY_RETENTION_DAYS", "0")))
+    )
+    webhook_rate_limit: int = Field(
+        default_factory=lambda: max(1, int(os.getenv("CANARY_WEBHOOK_RATE_LIMIT", "60")))
+    )
+    webhook_rate_window_seconds: int = Field(
+        default_factory=lambda: max(1, int(os.getenv("CANARY_WEBHOOK_RATE_WINDOW_SECONDS", "60")))
+    )
+    webhook_max_body_bytes: int = Field(
+        default_factory=lambda: max(1024, int(os.getenv("CANARY_WEBHOOK_MAX_BODY_BYTES", "65536")))
+    )
 
     # Forensics & Network Telemetry
     geoip_enabled: bool = Field(
         default_factory=lambda: os.getenv("CANARY_GEOIP_ENABLED", "true").lower() == "true"
     )
     trust_proxy_headers: bool = Field(
-        default_factory=lambda: os.getenv("CANARY_TRUST_PROXY_HEADERS", "true").lower() == "true"
+        default_factory=lambda: os.getenv("CANARY_TRUST_PROXY_HEADERS", "false").lower() == "true"
     )
 
     # Delay added to decoy responses to simulate authentic server processing (ms)

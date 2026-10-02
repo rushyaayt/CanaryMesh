@@ -2,11 +2,12 @@
 
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from app.config import get_settings
 from app.core.generators import compute_token_hash, generate_honeytoken
 from app.database import get_db
 from app.models import StatsResponse, TokenCreateRequest, TokenGeneratedResponse, TokenItem
+from app.services.auth import AdminPrincipal, require_admin_access, require_read_access
 
 router = APIRouter(prefix="/api/v1", tags=["Honeytokens"])
 
@@ -17,9 +18,17 @@ router = APIRouter(prefix="/api/v1", tags=["Honeytokens"])
     status_code=status.HTTP_201_CREATED,
     summary="Generate a new honeytoken",
 )
-def create_token(req: TokenCreateRequest):
+async def create_token(
+    req: TokenCreateRequest,
+    request: Request,
+    actor: AdminPrincipal = Depends(require_admin_access),
+):
     settings = get_settings()
     db = get_db()
+    if req.webhook_url:
+        from app.services.webhook_security import validate_webhook_url
+
+        await validate_webhook_url(req.webhook_url)
 
     token_id, raw_token, secret_component, display_token, instructions = generate_honeytoken(
         req.token_type, req.label
@@ -56,6 +65,10 @@ def create_token(req: TokenCreateRequest):
             "ttl_minutes": req.ttl_minutes,
         },
     )
+    db.record_admin_action(
+        actor.role, actor.key_id, "token.create", token_id,
+        request.client.host if request.client else "unknown",
+    )
 
     return TokenGeneratedResponse(
         id=token_id,
@@ -80,6 +93,7 @@ def create_token(req: TokenCreateRequest):
 def list_tokens(
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     limit: int = Query(100, ge=1, le=500),
+    _actor: AdminPrincipal = Depends(require_read_access),
 ):
     db = get_db()
     tokens = db.list_tokens(is_active=is_active, limit=limit)
@@ -91,7 +105,10 @@ def list_tokens(
     response_model=TokenItem,
     summary="Get honeytoken details",
 )
-def get_token(token_id: str):
+def get_token(
+    token_id: str,
+    _actor: AdminPrincipal = Depends(require_read_access),
+):
     db = get_db()
     token = db.get_token(token_id)
     if not token:
@@ -103,11 +120,19 @@ def get_token(token_id: str):
     "/tokens/{token_id}",
     summary="Revoke a honeytoken",
 )
-def revoke_token(token_id: str):
+def revoke_token(
+    token_id: str,
+    request: Request,
+    actor: AdminPrincipal = Depends(require_admin_access),
+):
     db = get_db()
     success = db.revoke_token(token_id)
     if not success:
         raise HTTPException(status_code=404, detail="Honeytoken not found or already deleted")
+    get_db().record_admin_action(
+        actor.role, actor.key_id, "token.revoke", token_id,
+        request.client.host if request.client else "unknown",
+    )
     return {"status": "success", "message": f"Honeytoken {token_id} revoked."}
 
 
@@ -116,7 +141,7 @@ def revoke_token(token_id: str):
     response_model=StatsResponse,
     summary="Summary telemetry of deception mesh",
 )
-def get_stats():
+def get_stats(_actor: AdminPrincipal = Depends(require_read_access)):
     db = get_db()
     stats = db.get_stats()
     return StatsResponse(**stats)
